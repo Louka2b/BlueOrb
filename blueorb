@@ -1,0 +1,32 @@
+#!/bin/sh
+# Lanceur multi-plateforme POSIX (macOS Apple Silicon ARM64 / Intel & Linux x86_64 / ARM64)
+set -e
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/opt/devkitpro/devkitARM/bin:$PATH"
+
+BIN="$ROOT_DIR/tools/blueorb/target/release/blueorb"
+SRC_DIR="$ROOT_DIR/tools/blueorb/src"
+
+NEED_BUILD=0
+if [ ! -x "$BIN" ]; then
+    NEED_BUILD=1
+else
+    for f in "$SRC_DIR"/*.rs "$ROOT_DIR/tools/blueorb/Cargo.toml"; do
+        if [ "$f" -nt "$BIN" ]; then
+            NEED_BUILD=1
+            break
+        fi
+    done
+fi
+
+if [ "$NEED_BUILD" -eq 1 ]; then
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "[erreur] Rust (cargo) est introuvable. Installez Rust via https://rustup.rs" >&2
+        exit 1
+    fi
+    echo "[blueorb] Compilation native de l'outil Rust (mode release)..."
+    cargo build --release --manifest-path "$ROOT_DIR/tools/blueorb/Cargo.toml" --quiet
+fi
+
+exec "$BIN" "$@"

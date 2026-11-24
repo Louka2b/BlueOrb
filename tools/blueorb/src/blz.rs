@@ -228,3 +228,80 @@ pub fn compress_blz(raw: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&add_size.to_le_bytes());
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Simule exactement la décompression en place (in-place) du firmware Nintendo 3DS dans un buffer unique.
+    fn simulate_3ds_inplace_decompress(comp: &[u8]) -> Vec<u8> {
+        let add_size = u32::from_le_bytes(comp[comp.len() - 4..].try_into().unwrap()) as usize;
+        let hdr_and_comp = u32::from_le_bytes(comp[comp.len() - 8..comp.len() - 4].try_into().unwrap());
+        let hdr_size = ((hdr_and_comp >> 24) & 0xFF) as usize;
+        let comp_size = (hdr_and_comp & 0x00FF_FFFF) as usize;
+
+        let total_out = comp.len() + add_size;
+        let mut ram = vec![0u8; total_out];
+        ram[..comp.len()].copy_from_slice(comp);
+
+        let uncomp_prefix = comp.len() - comp_size;
+        let mut src = comp.len() - hdr_size;
+        let mut dst = total_out;
+
+        while dst > uncomp_prefix && src > uncomp_prefix {
+            assert!(dst >= src, "Collision in-place 3DS: dst=0x{:X} < src=0x{:X}", dst, src);
+            src -= 1;
+            let mut flags = ram[src];
+            for _ in 0..8 {
+                if dst <= uncomp_prefix || src <= uncomp_prefix {
+                    break;
+                }
+                if (flags & 0x80) == 0 {
+                    src -= 1;
+                    dst -= 1;
+                    assert!(dst >= src, "Collision littéral in-place: dst=0x{:X} < src=0x{:X}", dst, src);
+                    ram[dst] = ram[src];
+                } else {
+                    src -= 2;
+                    let pair = (ram[src] as usize) | ((ram[src + 1] as usize) << 8);
+                    let length = (pair >> 12) + 3;
+                    let disp = (pair & 0x0FFF) + 3;
+                    for _ in 0..length {
+                        dst -= 1;
+                        assert!(dst >= src, "Collision LZ in-place: dst=0x{:X} < src=0x{:X}", dst, src);
+                        ram[dst] = ram[dst + disp];
+                    }
+                }
+                flags <<= 1;
+            }
+        }
+        assert_eq!(dst, uncomp_prefix);
+        ram
+    }
+
+    #[test]
+    fn test_blz_roundtrip_and_inplace_safety() {
+        let mut sample = Vec::with_capacity(65536);
+        for i in 0..16384u32 {
+            sample.extend_from_slice(&(i % 251).to_le_bytes());
+        }
+        let comp = compress_blz(&sample);
+        assert!(comp.len() < sample.len());
+        let dec = decompress_blz(&comp).unwrap();
+        assert_eq!(dec, sample);
+        let inplace = simulate_3ds_inplace_decompress(&comp);
+        assert_eq!(inplace, sample);
+    }
+
+    #[test]
+    fn test_blz_real_code_bin_if_present() {
+        let candidate = std::path::Path::new("../../baserom/code.bin");
+        if candidate.exists() {
+            let raw = std::fs::read(candidate).unwrap();
+            let comp = compress_blz(&raw);
+            assert!(comp.len() < raw.len());
+            let inplace = simulate_3ds_inplace_decompress(&comp);
+            assert_eq!(inplace, raw);
+        }
+    }
+}

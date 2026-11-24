@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ResolvedToolchain {
     pub assembler: PathBuf,
     pub linker: PathBuf,
