@@ -4,12 +4,14 @@
 *.cxi
 baserom/
 
-# Generated assembly & build artifacts
+# Generated assembly, build artifacts & standalone app bundles
 asm/
 build/
+dist/
 
 # Rust tool build cache
 tools/blueorb/target/
+tools/launcher/target/
 
 # OS files
 .DS_Store

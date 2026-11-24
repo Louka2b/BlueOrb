@@ -39,8 +39,10 @@ jobs:
         run: |
           choco install gcc-arm-embedded llvm --no-progress -y
 
-      - name: Build BlueOrb CLI
-        run: cargo build --release --manifest-path tools/blueorb/Cargo.toml
+      - name: Build & Test BlueOrb CLI
+        run: |
+          cargo build --release --manifest-path tools/blueorb/Cargo.toml
+          cargo test --release --manifest-path tools/blueorb/Cargo.toml
 
       - name: Verify Toolchain Detection (blueorb doctor)
         shell: pwsh

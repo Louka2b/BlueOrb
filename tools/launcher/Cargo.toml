@@ -1,0 +1,10 @@
+[package]
+name = "pokemon_alpha_sapphire_launcher"
+version = "0.1.0"
+edition = "2021"
+description = "Lanceur standalone natif (style Ship of Harkinian) pour Pokémon Saphir Alpha"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
