@@ -1,0 +1,70 @@
+# Configuration du projet de décompilation & recompilation Pokémon Saphir Alpha (sango-2)
+
+[project]
+name = "BlueOrb"
+game = "Pokemon Alpha Sapphire (USA) (Rev 2)"
+product_code = "CTR-P-ECLA"
+internal_title = "sango-2"
+title_id = "000400000011C500"
+default_rom = "Pokemon Alpha Sapphire (USA) (En,Ja,Fr,De,Es,It,Ko) (Rev 2).3ds"
+
+[baserom]
+code_sha256 = "b7f9ce60361f3709ed0ce879658afe10a712f7db060640fa72bba826301b7c16"
+code_file_size = 0x530000
+
+[memory_map]
+text_addr   = 0x00100000
+text_size   = 0x004795FC
+text_padded = 0x0047A000
+
+rodata_addr   = 0x0057A000
+rodata_size   = 0x00071A14
+rodata_padded = 0x00072000
+
+data_addr   = 0x005EC000
+data_size   = 0x000439F4
+data_padded = 0x00044000
+
+bss_addr    = 0x0062F9F4
+bss_size    = 0x0007EC2C
+
+[toolchain]
+# Compilateur C++ par défaut ("clang", "gcc", ou "armcc" si RVCT 4.1 est installé)
+default_compiler = "clang"
+clang_cxx = "clang++"
+gcc_cxx = "arm-none-eabi-g++"
+armcc_cxx = "armcc"
+assembler = "arm-none-eabi-as"
+linker = "arm-none-eabi-ld"
+objcopy = "arm-none-eabi-objcopy"
+objdump = "arm-none-eabi-objdump"
+
+clang_flags = [
+    "-target", "armv6k-none-eabi",
+    "-mfloat-abi=hard",
+    "-mfpu=vfpv2",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-fno-PIC",
+    "-fno-unwind-tables",
+    "-std=gnu++11",
+    "-O2",
+    "-Iinclude",
+]
+
+gcc_flags = [
+    "-march=armv6k",
+    "-mfloat-abi=hard",
+    "-mfpu=vfpv2",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-std=gnu++11",
+    "-O2",
+    "-Iinclude",
+]
+
+as_flags = [
+    "-march=armv6k",
+    "-mfpu=vfpv2",
+    "-mfloat-abi=hard",
+]

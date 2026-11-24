@@ -1,0 +1,15 @@
+# ROMs & extracted base assets (copyrighted game data)
+*.3ds
+*.cia
+*.cxi
+baserom/
+
+# Generated assembly & build artifacts
+asm/
+build/
+
+# Rust tool build cache
+tools/blueorb/target/
+
+# OS files
+.DS_Store

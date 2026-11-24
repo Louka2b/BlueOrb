@@ -1,0 +1,29 @@
+# Table des unités de compilation C/C++ décompilées (matching)
+# Toutes les plages de .text non listées ici sont automatiquement découpées en
+# unités assembleur GNU ARM dans asm/text/*.s par `blueorb split`.
+
+[[unit]]
+start     = 0x0015EB80
+end       = 0x0015EB8C
+source    = "src/nn_os_tick.cpp"
+flags     = ["-marm", "-O2"]
+
+[[unit]]
+start     = 0x0033E190
+end       = 0x0033E198
+source    = "src/battle_state_33e190.cpp"
+flags     = ["-marm", "-O2"]
+
+[[unit]]
+start     = 0x0034B0C0
+end       = 0x0034B0CC
+source    = "src/battle_flag_34b0c0.cpp"
+flags     = ["-marm", "-O2"]
+gcc_flags = ["-ffixed-r2", "-ffixed-r3"]
+
+[[unit]]
+start     = 0x0034B1EC
+end       = 0x0034B1F8
+source    = "src/battle_flag_34b1ec.cpp"
+flags     = ["-marm", "-O2"]
+gcc_flags = ["-ffixed-r2", "-ffixed-r3"]

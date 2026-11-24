@@ -1,0 +1,13 @@
+# Symboles renommés manuellement (prioritaires sur les noms auto-générés)
+# Format: <adresse_hex> <arm|thumb|data> <nom_du_symbole>
+
+0x00100000 arm   __ctr_start
+0x00100024 arm   __clear_bss
+0x00100048 thumb wcsncat_00100048
+0x00100096 thumb bsearch_00100096
+0x00139414 arm   gfl2_str_StrBuf_Clear
+0x0015EB80 arm   svcGetSystemTick_0015EB80
+0x0015EB88 arm   nullsub_0015EB88
+0x0033E190 arm   BattleObj_GetParam32_0033E190
+0x0034B0C0 arm   BattleObj_EnableFlag24_0034B0C0
+0x0034B1EC arm   BattleObj_DisableFlag24_0034B1EC
