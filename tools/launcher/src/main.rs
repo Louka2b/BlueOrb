@@ -78,9 +78,11 @@ fn main() {
 
     let user_save_dir = game_data_dir.join("userdata");
     let _ = fs::create_dir_all(&user_save_dir);
+    let settings_file = user_save_dir.join("settings.toml");
 
     let mut cmd = Command::new(&native_bin);
     cmd.current_dir(&game_data_dir);
+    cmd.env("ZAKURO_SETTINGS_PATH", &settings_file);
     cmd.arg(&rom_asset);
     cmd.arg("--new3ds");
     cmd.arg("--data").arg(&user_save_dir);
@@ -90,9 +92,6 @@ fn main() {
         .filter(|a| !a.starts_with("-psn_"))
         .collect();
 
-    if !user_args.iter().any(|a| a == "--scale") {
-        cmd.args(["--scale", "3"]);
-    }
     for arg in &user_args {
         cmd.arg(arg);
     }

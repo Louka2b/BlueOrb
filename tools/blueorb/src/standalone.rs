@@ -67,13 +67,16 @@ impl TargetPlatform {
 pub struct StandaloneOptions {
     pub target: TargetPlatform,
     pub rom_path: PathBuf,
-    pub resolution_factor: u32, // Échelle fenêtre/rendu (défaut: 3)
+    pub resolution_factor: u32, // Échelle 3D interne GPU (défaut: 5 = QHD)
     pub no_outlines: bool,
     pub unlock_60fps: bool,
     pub portable_copy: bool,
     pub force_recomp: bool,
     pub windowed: bool,
     pub language: u32,
+    pub top_aspect: String,     // "console", "wide16x9", "wide21x9", "wide32x9"
+    pub dual_windows: bool,     // Séparer écran haut et écran bas en 2 fenêtres
+    pub explicit_display_flags: bool,
 }
 
 impl StandaloneOptions {
@@ -81,13 +84,16 @@ impl StandaloneOptions {
         Self {
             target: TargetPlatform::host(),
             rom_path: root.join(&cfg.default_rom),
-            resolution_factor: 3,
+            resolution_factor: 5, // 5x résolution 3D interne GPU (2000x1200 + SSAA 16-tap)
             no_outlines: true,
             unlock_60fps: false,
             portable_copy: false,
             force_recomp: false,
             windowed: false,
             language: 2,
+            top_aspect: "console".into(),
+            dual_windows: false,
+            explicit_display_flags: false,
         }
     }
 }
@@ -132,11 +138,12 @@ pub fn build_standalone_app(
         println!("[1/5] Métadonnées et icône SMDH prêtes.");
     }
 
-    // 2. Préparer les sources du recompilateur AOT `3dsrecomp` et du runtime HLE `zakuro`
+    // 2. Préparer les sources du recompilateur AOT `3dsrecomp` et du runtime HLE `zakuro` + Patchs Remaster HD
     let recomp_repo = sdk_dir.join("3dsrecomp");
     let zakuro_repo = sdk_dir.join("zakuro");
     ensure_git_repo(RECOMP3DS_GIT, &recomp_repo, "3dsrecomp")?;
     ensure_git_repo(ZAKURO_GIT, &zakuro_repo, "zakuro")?;
+    crate::enhancer::apply_sdk_enhancements(&recomp_repo, &zakuro_repo)?;
 
     let cargo_bin = find_program("cargo", &candidate_search_dirs())
         .unwrap_or_else(|| PathBuf::from("cargo"));
@@ -196,22 +203,18 @@ pub fn build_standalone_app(
         );
     }
 
-    // 4. Compilation & édition de liens statique de l'exécutable natif final (librecomp.a + runtime HLE Rust)
+    // 4. Compilation & édition de liens statique de l'exécutable natif final (librecomp.a + runtime HLE Rust + Upscaler 4x)
+    println!("[4/5] Liaison statique de l'exécutable natif autonome (librecomp.a + moteur GPU HD 4x xBR/Anisotrope 16x)...");
+    run_checked(
+        Command::new(&cargo_bin).args([
+            "build",
+            "--release",
+            "--manifest-path",
+            &port_dir.join("Cargo.toml").to_string_lossy(),
+        ]),
+        "compilation de l'exécutable natif pokemon-alpha-sapphire",
+    )?;
     let native_port_bin = port_binary_path(&port_dir);
-    if need_recomp || !native_port_bin.exists() {
-        println!("[4/5] Liaison statique de l'exécutable natif autonome (librecomp.a + runtime HLE GPU/OS)...");
-        run_checked(
-            Command::new(&cargo_bin).args([
-                "build",
-                "--release",
-                "--manifest-path",
-                &port_dir.join("Cargo.toml").to_string_lossy(),
-            ]),
-            "compilation de l'exécutable natif pokemon-alpha-sapphire",
-        )?;
-    } else {
-        println!("[4/5] Exécutable natif déjà à jour.");
-    }
 
     // Compiler aussi notre micro-lanceur d'auto-boot sans arguments (`tools/launcher`)
     run_checked(
@@ -329,16 +332,16 @@ pub fn build_standalone_app(
         "\nPortage Natif AOT prêt (ZÉRO émulateur externe) : {}",
         output_bundle.display()
     );
-    println!("  - Contrôles : Flèches / IJKL (Stick) | X=A, Z=B, S=X, A=Y | Entrée=Start | Souris=Tactile | F11=Plein écran | Échap=Menu");
+    println!("  - Raccourcis : F6 (Ultra-Wide 5:3/16:9/21:9/32:9) | F7 (Séparer en 2 fenêtres) | F11 (Plein écran) | Échap (Menu)");
     Ok(output_bundle)
 }
 
 pub fn launch_standalone_app(
     bundle_path: &Path,
     target: TargetPlatform,
-    opts: &StandaloneOptions,
+    _opts: &StandaloneOptions,
 ) -> Result<(), String> {
-    println!("[play] Lancement du binaire natif AOT Pokémon Saphir Alpha...");
+    println!("[play] Lancement du binaire natif AOT Remaster Pokémon Saphir Alpha...");
     let bin = match target {
         TargetPlatform::MacOsArm64 | TargetPlatform::MacOsX64 => bundle_path
             .join("Contents")
@@ -348,9 +351,8 @@ pub fn launch_standalone_app(
         TargetPlatform::LinuxX64 => bundle_path.join("PokemonAlphaSapphire"),
     };
 
-    let mut cmd = Command::new(&bin);
-    cmd.args(["--scale", &opts.resolution_factor.to_string()]);
-    cmd.spawn()
+    Command::new(&bin)
+        .spawn()
         .map_err(|e| format!("Impossible de lancer '{}': {}", bin.display(), e))?;
     Ok(())
 }
@@ -432,20 +434,23 @@ fn stage_rom_assets_and_mods(
     fs::create_dir_all(userdata.join("mods").join(&cfg.title_id).join("textures"))
         .map_err(|e| e.to_string())?;
 
-    let mut cheats_txt = String::new();
-    cheats_txt.push_str("[HD - Sans Contours Noirs (No Outlines v1.4)]\n");
-    if opts.no_outlines {
-        cheats_txt.push_str("*citra_enabled\n");
+    // Supprimer l'ancien fichier cheats éventuel : No Outlines (HD) et 60 FPS sont désormais intégrés nativement et réversiblement !
+    let old_cheat = cheats_dir.join(format!("{}.txt", cfg.title_id));
+    if old_cheat.exists() {
+        let _ = fs::remove_file(&old_cheat);
     }
-    cheats_txt.push_str("D3000000 00000000\n0037A140 00000000\n0037A144 00000000\nD2000000 00000000\n\n");
-    cheats_txt.push_str("[60 FPS Unlock (v1.4)]\n");
-    if opts.unlock_60fps {
-        cheats_txt.push_str("*citra_enabled\n");
-    }
-    cheats_txt.push_str("D3000000 00000000\n08C690A0 00000002\nD2000000 00000000\n");
 
-    fs::write(cheats_dir.join(format!("{}.txt", cfg.title_id)), cheats_txt)
-        .map_err(|e| e.to_string())?;
+    crate::enhancer::write_remaster_settings_toml(
+        &userdata.join("settings.toml"),
+        &cfg.title_id,
+        opts.resolution_factor,
+        opts.no_outlines,
+        opts.unlock_60fps,
+        opts.language,
+        &opts.top_aspect,
+        opts.dual_windows,
+        opts.explicit_display_flags,
+    )?;
     Ok(())
 }
 
@@ -621,4 +626,159 @@ fn make_executable(p: &Path) {
         }
     }
     let _ = env::consts::OS;
+}
+
+/// Compile et empaquette l'installateur graphique natif (`BlueOrb Installer.app` / `BlueOrb-Installer.exe` / `BlueOrb-Installer`).
+pub fn build_and_launch_gui_installer(project_root: &Path, launch: bool) -> Result<PathBuf, String> {
+    let cargo_bin = find_program("cargo", &candidate_search_dirs())
+        .unwrap_or_else(|| PathBuf::from("cargo"));
+    let installer_manifest = project_root.join("tools").join("installer").join("Cargo.toml");
+
+    println!("[GUI] Compilation de l'installateur graphique natif BlueOrb...");
+    run_checked(
+        Command::new(&cargo_bin).args([
+            "build",
+            "--release",
+            "--manifest-path",
+            &installer_manifest.to_string_lossy(),
+        ]),
+        "compilation de blueorb-installer",
+    )?;
+
+    let gui_bin_name = if cfg!(target_os = "windows") {
+        "blueorb-installer.exe"
+    } else {
+        "blueorb-installer"
+    };
+    let built_gui = project_root
+        .join("tools")
+        .join("installer")
+        .join("target")
+        .join("release")
+        .join(gui_bin_name);
+
+    let cli_bin_name = if cfg!(target_os = "windows") {
+        "blueorb.exe"
+    } else {
+        "blueorb"
+    };
+    let built_cli = project_root
+        .join("tools")
+        .join("blueorb")
+        .join("target")
+        .join("release")
+        .join(cli_bin_name);
+
+    let dist_dir = project_root.join("dist");
+    fs::create_dir_all(&dist_dir).map_err(|e| e.to_string())?;
+    let icon_smdh = project_root.join("baserom").join("exefs").join("icon.bin");
+
+    let packaged_exe = match TargetPlatform::host() {
+        TargetPlatform::MacOsArm64 | TargetPlatform::MacOsX64 => {
+            let tmp_stage = env::temp_dir().join(format!("blueorb_inst_sign_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&tmp_stage);
+            let tmp_app = tmp_stage.join("BlueOrb Installer.app");
+            let contents = tmp_app.join("Contents");
+            let macos_dir = contents.join("MacOS");
+            let res_dir = contents.join("Resources");
+            fs::create_dir_all(&macos_dir).map_err(|e| e.to_string())?;
+            fs::create_dir_all(&res_dir).map_err(|e| e.to_string())?;
+
+            if icon_smdh.is_file() {
+                let _ = generate_app_icons(&icon_smdh, Some(&res_dir.join("AppIcon.icns")), None, None);
+            }
+            let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>BlueOrb Installer</string>
+    <key>CFBundleExecutable</key>
+    <string>BlueOrbInstaller</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.blueorb.installer</string>
+    <key>CFBundleName</key>
+    <string>BlueOrb Installer</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.2.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+"#;
+            fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
+
+            let dst_gui = macos_dir.join("BlueOrbInstaller");
+            fs::copy(&built_gui, &dst_gui).map_err(|e| e.to_string())?;
+            make_executable(&dst_gui);
+
+            if built_cli.is_file() {
+                let dst_cli = macos_dir.join("blueorb-cli");
+                fs::copy(&built_cli, &dst_cli).map_err(|e| e.to_string())?;
+                make_executable(&dst_cli);
+            }
+
+            run_checked(
+                Command::new("codesign")
+                    .args(["--force", "--deep", "--sign", "-"])
+                    .arg(&tmp_app),
+                "signature Apple Silicon de BlueOrb Installer.app",
+            )?;
+
+            let final_app = dist_dir.join("BlueOrb Installer.app");
+            if final_app.exists() {
+                let _ = fs::remove_dir_all(&final_app);
+            }
+            move_dir_cross_fs(&tmp_app, &final_app)?;
+            let _ = fs::remove_dir_all(&tmp_stage);
+            println!("[GUI] Installateur prêt : {}", final_app.display());
+            final_app
+                .join("Contents")
+                .join("MacOS")
+                .join("BlueOrbInstaller")
+        }
+        TargetPlatform::WindowsX64 => {
+            let pkg_dir = dist_dir.join("BlueOrb Installer");
+            fs::create_dir_all(&pkg_dir).map_err(|e| e.to_string())?;
+            let dst_gui = pkg_dir.join("BlueOrb-Installer.exe");
+            fs::copy(&built_gui, &dst_gui).map_err(|e| e.to_string())?;
+            if built_cli.is_file() {
+                fs::copy(&built_cli, pkg_dir.join("blueorb-cli.exe")).map_err(|e| e.to_string())?;
+            }
+            println!("[GUI] Installateur prêt : {}", dst_gui.display());
+            dst_gui
+        }
+        TargetPlatform::LinuxX64 => {
+            let pkg_dir = dist_dir.join("BlueOrb Installer");
+            fs::create_dir_all(&pkg_dir).map_err(|e| e.to_string())?;
+            let dst_gui = pkg_dir.join("BlueOrb-Installer");
+            fs::copy(&built_gui, &dst_gui).map_err(|e| e.to_string())?;
+            make_executable(&dst_gui);
+            if built_cli.is_file() {
+                let dst_cli = pkg_dir.join("blueorb-cli");
+                fs::copy(&built_cli, &dst_cli).map_err(|e| e.to_string())?;
+                make_executable(&dst_cli);
+            }
+            println!("[GUI] Installateur prêt : {}", dst_gui.display());
+            dst_gui
+        }
+    };
+
+    if launch {
+        println!("[GUI] Ouverture de la fenêtre d'installation BlueOrb...");
+        Command::new(&packaged_exe)
+            .current_dir(project_root)
+            .spawn()
+            .map_err(|e| format!("Impossible d'ouvrir l'installateur GUI : {}", e))?;
+    }
+
+    Ok(packaged_exe)
 }

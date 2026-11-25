@@ -10,23 +10,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14        # Apple Silicon (ARM64)
+          - os: macos-latest    # Apple Silicon (ARM64)
             target: aarch64-apple-darwin
+            artifact: BlueOrb-Installer-macOS-ARM64
           - os: ubuntu-latest   # Linux (x86_64)
             target: x86_64-unknown-linux-gnu
+            artifact: BlueOrb-Installer-Linux-x86_64
           - os: windows-latest  # Windows (x86_64)
             target: x86_64-pc-windows-msvc
+            artifact: BlueOrb-Installer-Windows-x86_64
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ARM EABI Toolchain (Linux)
+      - name: Install ARM EABI Toolchain & GUI Libraries (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils-arm-none-eabi gcc-arm-none-eabi g++-arm-none-eabi clang
+          sudo apt-get install -y \
+            binutils-arm-none-eabi \
+            gcc-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib \
+            clang \
+            pkg-config \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libdbus-1-dev \
+            libfontconfig1-dev
 
       - name: Install ARM EABI Toolchain (macOS ARM64)
         if: runner.os == 'macOS'
@@ -39,11 +57,21 @@ jobs:
         run: |
           choco install gcc-arm-embedded llvm --no-progress -y
 
-      - name: Build & Test BlueOrb CLI
+      - name: Build & Test BlueOrb CLI, Launcher & GUI Installer
         run: |
           cargo build --release --manifest-path tools/blueorb/Cargo.toml
           cargo test --release --manifest-path tools/blueorb/Cargo.toml
+          cargo build --release --manifest-path tools/launcher/Cargo.toml
+          cargo build --release --manifest-path tools/installer/Cargo.toml
 
-      - name: Verify Toolchain Detection (blueorb doctor)
+      - name: Package Cross-Platform GUI Installer Bundle
         shell: pwsh
-        run: ./blueorb.ps1 doctor
+        run: |
+          ./blueorb.ps1 doctor
+          ./blueorb.ps1 installer --no-launch
+
+      - name: Upload GUI Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/BlueOrb Installer*

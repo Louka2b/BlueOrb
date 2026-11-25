@@ -12,6 +12,7 @@ dist/
 # Rust tool build cache
 tools/blueorb/target/
 tools/launcher/target/
+tools/installer/target/
 
 # OS files
 .DS_Store

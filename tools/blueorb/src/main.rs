@@ -5,6 +5,7 @@ mod builder;
 mod config;
 mod cro;
 mod differ;
+mod enhancer;
 mod icon;
 mod rom3ds;
 mod sha256;
@@ -27,17 +28,25 @@ Compatible nativement : macOS (Apple Silicon ARM64 / Intel), Linux (x86_64), Win
 UTILISATION :
   blueorb <commande> [options]
 
-COMMANDES JEU STANDALONE (STYLE SHIP OF HARKINIAN) :
+COMMANDES JEU STANDALONE & INSTALLATEUR GUI :
+  gui, installer [--no-launch]   Compile et ouvre l'Installateur Graphique (glisser-déposer la ROM .3ds -> tout se fait seul !)
+                                   - macOS   : dist/BlueOrb Installer.app
+                                   - Windows : dist/BlueOrb Installer/BlueOrb-Installer.exe
+                                   - Linux   : dist/BlueOrb Installer/BlueOrb-Installer
   app [options]                  Crée l'application autonome prête à jouer dans dist/ :
                                    - macOS   : dist/Pokemon Alpha Sapphire.app
                                    - Windows : dist/Pokemon Alpha Sapphire/Pokemon Alpha Sapphire.exe
                                    - Linux   : dist/Pokemon Alpha Sapphire/PokemonAlphaSapphire
   play [options]                 Met à jour l'app autonome et lance Pokémon Saphir Alpha immédiatement !
     Options de `app` / `play` :
-      --res <1..10>              Facteur de résolution interne HD/4K (défaut: 5 = QHD, 8 = 4K+)
-      --60fps                    Active le déblocage 60 FPS au démarrage
+      --ultrawide, --21:9        Active le vrai rendu 3D Ultra-Wide 21:9 sans étirement
+      --super-ultrawide, --32:9  Active le rendu Super Ultra-Wide 32:9
+      --widescreen, --16:9       Active le rendu Widescreen 16:9
+      --5:3, --console-aspect    Conserve le format 3DS classique 5:3 (par défaut)
+      --dual-windows             Sépare l'écran du haut et l'écran tactile du bas sur 2 fenêtres !
+      --res <1..10>              Facteur de résolution 3D interne GPU (défaut: 5 = QHD, 8 = 4K+)
+      --60fps                    Active en plus le mode Turbo 2x au démarrage
       --with-outlines            Conserve les contours noirs 3DS d'origine (désactivés en HD par défaut)
-      --windowed, -w             Démarre en mode fenêtré au lieu du plein écran
       --portable                 Copie complète de la ROM dans le bundle (pour clé USB / autre PC)
       --lang <fr|en|ja>          Langue système du jeu (défaut: fr)
 
@@ -90,7 +99,38 @@ fn parse_standalone_opts(args: &[String], root: &Path, cfg: &ProjectConfig) -> R
                     .parse::<u32>()
                     .map_err(|_| "Facteur --res invalide (entier de 1 à 10 attendu)".to_string())?;
                 opts.resolution_factor = r.clamp(1, 10);
+                opts.explicit_display_flags = true;
                 i += 2;
+            }
+            "--ultrawide" | "--21:9" => {
+                opts.top_aspect = "wide21x9".into();
+                opts.explicit_display_flags = true;
+                i += 1;
+            }
+            "--super-ultrawide" | "--32:9" => {
+                opts.top_aspect = "wide32x9".into();
+                opts.explicit_display_flags = true;
+                i += 1;
+            }
+            "--widescreen" | "--16:9" => {
+                opts.top_aspect = "wide16x9".into();
+                opts.explicit_display_flags = true;
+                i += 1;
+            }
+            "--console-aspect" | "--5:3" => {
+                opts.top_aspect = "console".into();
+                opts.explicit_display_flags = true;
+                i += 1;
+            }
+            "--dual-windows" | "--two-windows" => {
+                opts.dual_windows = true;
+                opts.explicit_display_flags = true;
+                i += 1;
+            }
+            "--single-window" | "--stacked" => {
+                opts.dual_windows = false;
+                opts.explicit_display_flags = true;
+                i += 1;
             }
             "--60fps" => {
                 opts.unlock_60fps = true;
@@ -145,6 +185,10 @@ fn run() -> Result<(), String> {
     let build_dir = root.join("build");
 
     match args[0].as_str() {
+        "gui" | "installer" => {
+            let launch = !args.iter().any(|a| a == "--no-launch" || a == "--build-only");
+            standalone::build_and_launch_gui_installer(&root, launch)?;
+        }
         "app" | "standalone" => {
             let opts = parse_standalone_opts(&args, &root, &cfg)?;
             standalone::build_standalone_app(&root, &cfg, &opts)?;
