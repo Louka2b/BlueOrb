@@ -503,16 +503,21 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         }
     }
 
-    // 4a. `main.rs` : no black console window on Windows
+    // 4a. `main.rs` : no black console window on Windows + offer to move into /Applications on macOS
     let main_rs = zakuro_src.join("main.rs");
     if main_rs.exists() {
-        let src = read_lf(&main_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&main_rs).map_err(|e| e.to_string())?;
         if !src.contains("windows_subsystem") {
-            let patched = format!(
-                "#![cfg_attr(target_os = \"windows\", windows_subsystem = \"windows\")]\n{src}"
-            );
-            fs::write(&main_rs, patched).map_err(|e| e.to_string())?;
+            src = format!("#![cfg_attr(target_os = \"windows\", windows_subsystem = \"windows\")]\n{src}");
         }
+        if !src.contains("BLUEORB_MOVE_TO_APPLICATIONS") {
+            src = src.replace(
+                "    zakuro::run(None);",
+                "    #[cfg(target_os = \"macos\")]\n    blueorb_offer_move_to_applications();\n    zakuro::run(None);",
+            );
+            src.push_str(MOVE_TO_APPLICATIONS_RS);
+        }
+        fs::write(&main_rs, src).map_err(|e| e.to_string())?;
     }
 
     // 4b. `recompile.rs` : compiler à pleine vitesse sur les cœurs Performance (4x-5x plus rapide au 1er lancement !)
@@ -613,7 +618,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         if !src.contains("BLUEORB_WIDE_CONSOLE_MENU") {
             src = src.replace(
                 "    CheatsFolder,\n}",
-                "    CheatsFolder,\n    PickRomFile,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
+                "    CheatsFolder,\n    PickRomFile,\n    CleanResiduals,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
             );
             src = src.replace(
                 "    pub menu_open: bool,",
@@ -909,6 +914,71 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         });
     }
 
+    /// Removes everything BlueOrb generated outside the app (native library, build cache, downloaded toolchain).
+    /// Save files are never touched.
+    fn clean_residual_files(&mut self) {
+        let confirm = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Clean Up Residual Files")
+            .set_description(
+                "This removes the recompiled native library, the C build cache and the downloaded compiler.\n\nYour save files are kept. The game will be recompiled the next time you launch it.",
+            )
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show();
+        if confirm != rfd::MessageDialogResult::Ok {
+            return;
+        }
+        if self.game.is_some() {
+            self.back_to_library();
+        }
+
+        fn size_of(path: &Path) -> u64 {
+            let Ok(meta) = std::fs::symlink_metadata(path) else { return 0 };
+            if !meta.is_dir() {
+                return meta.len();
+            }
+            std::fs::read_dir(path)
+                .map(|entries| entries.flatten().map(|e| size_of(&e.path())).sum())
+                .unwrap_or(0)
+        }
+        let mut freed = 0u64;
+        let mut remove = |path: &Path| {
+            if !path.exists() {
+                return;
+            }
+            let bytes = size_of(path);
+            let gone = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+            match gone {
+                Ok(()) => freed += bytes,
+                Err(error) => log::warn!("could not remove {}: {error}", path.display()),
+            }
+        };
+
+        let mut ids: Vec<u64> = vec![0x0004_0000_0011_C500, 0x0004_0000_0011_C400];
+        if let Some(rom) = self.settings.blueorb_rom.as_ref() {
+            if let Ok(title) = zakuro_fs::Title::load(rom) {
+                ids.push(title.program_id());
+            }
+        }
+        ids.extend(self.library.games.iter().map(|game| game.program_id));
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            if let Some(lib) = zakuro_core::recompiled::installed(id) {
+                remove(&lib);
+            }
+            remove(&recomp3ds::build::cache_dir(id));
+        }
+        if let Some(tools) = zig::tools_dir(self.data_dir.as_deref()) {
+            remove(&tools);
+        }
+
+        self.menus.toast = Some((
+            format!("Removed {:.1} MB of residual files", freed as f64 / (1024.0 * 1024.0)),
+            Instant::now(),
+        ));
+    }
+
     fn toggle_dual_windows(&mut self) {
         let target = if self.active.layout == Screens::SeparateWindows {
             self.last_combined_layout
@@ -1093,6 +1163,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                     self.accept_rom_file(file);
                 }
             }
+            Action::CleanResiduals => self.clean_residual_files(),
             Action::ToggleDualWindows => self.toggle_dual_windows(),
             Action::SetLayout(layout) => self.set_layout(layout),
             Action::SetTopShape(shape) => self.set_top_shape(shape),
@@ -2610,6 +2681,81 @@ fn console_screen_layout_card(
         );
     }
     resp.clicked()
+}
+"#;
+
+const MOVE_TO_APPLICATIONS_RS: &str = r#"
+// BLUEORB_MOVE_TO_APPLICATIONS
+/// On first launch outside /Applications, offers to install the bundle there (like most Mac apps do).
+#[cfg(target_os = "macos")]
+fn blueorb_offer_move_to_applications() {
+    use std::path::{Path, PathBuf};
+
+    let Ok(exe) = std::env::current_exe() else { return };
+    // .../BlueOrb.app/Contents/MacOS/BlueOrb
+    let Some(bundle) = exe.ancestors().nth(3).map(Path::to_path_buf) else { return };
+    if bundle.extension().and_then(|e| e.to_str()) != Some("app") {
+        return;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    if bundle.starts_with("/Applications") || bundle.starts_with(home.join("Applications")) {
+        return;
+    }
+    let stamp_dir = home.join("Library/Application Support/BlueOrb");
+    let stamp = stamp_dir.join(".skip_move_to_applications");
+    if stamp.exists() {
+        return;
+    }
+
+    let answer = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Info)
+        .set_title("Move to Applications folder?")
+        .set_description(
+            "BlueOrb is not in your Applications folder.\n\nMove it there now so it appears in Launchpad and Spotlight?",
+        )
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show();
+    if answer != rfd::MessageDialogResult::Yes {
+        let _ = std::fs::create_dir_all(&stamp_dir);
+        let _ = std::fs::write(&stamp, b"1");
+        return;
+    }
+
+    let name = bundle.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "BlueOrb.app".into());
+    let copy_to = |dir: &Path| -> Option<PathBuf> {
+        let dest = dir.join(&name);
+        if dest.exists() && std::fs::remove_dir_all(&dest).is_err() {
+            return None;
+        }
+        let ok = std::process::Command::new("/usr/bin/ditto")
+            .arg(&bundle)
+            .arg(&dest)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(dest)
+    };
+    let user_apps = home.join("Applications");
+    let dest = copy_to(Path::new("/Applications")).or_else(|| {
+        let _ = std::fs::create_dir_all(&user_apps);
+        copy_to(&user_apps)
+    });
+    let Some(dest) = dest else {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Could not move BlueOrb")
+            .set_description("BlueOrb could not be copied to your Applications folder. You can drag it there manually.")
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+        return;
+    };
+
+    // a quarantined copy launched from a randomized read-only path can't be deleted, leave it alone
+    if !bundle.to_string_lossy().contains("/AppTranslocation/") {
+        let _ = std::fs::remove_dir_all(&bundle);
+    }
+    if std::process::Command::new("/usr/bin/open").arg("-n").arg(&dest).spawn().is_ok() {
+        std::process::exit(0);
+    }
 }
 "#;
 
