@@ -29,6 +29,11 @@ UTILISATION :
   blueorb <commande> [options]
 
 COMMANDES JEU STANDALONE & INSTALLATEUR GUI :
+  release [--launch]             Crée l'application GUI tout-en-un 100% légale (ZÉRO ROM / ZÉRO terminal) :
+                                   - macOS   : dist/BlueOrb.app
+                                   - Windows : dist/BlueOrb/BlueOrb.exe
+                                   - Linux   : dist/BlueOrb/BlueOrb
+                                 (1er lancement : demande la ROM .3ds et recompile seul ; ensuite : lance le jeu direct !)
   gui, installer [--no-launch]   Compile et ouvre l'Installateur Graphique (glisser-déposer la ROM .3ds -> tout se fait seul !)
                                    - macOS   : dist/BlueOrb Installer.app
                                    - Windows : dist/BlueOrb Installer/BlueOrb-Installer.exe
@@ -185,6 +190,10 @@ fn run() -> Result<(), String> {
     let build_dir = root.join("build");
 
     match args[0].as_str() {
+        "release" | "legal-app" => {
+            let launch = args.iter().any(|a| a == "--launch" || a == "--open");
+            standalone::build_clean_legal_app(&root, launch)?;
+        }
         "gui" | "installer" => {
             let launch = !args.iter().any(|a| a == "--no-launch" || a == "--build-only");
             standalone::build_and_launch_gui_installer(&root, launch)?;

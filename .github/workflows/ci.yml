@@ -1,40 +1,56 @@
-name: Cross-Platform Build (macOS ARM64, Linux, Windows x86_64)
+name: Cross-Platform Build & Legal GUI Auto-Release (macOS ARM64, Linux, Windows x86_64)
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  toolchain-and-cli:
+  build:
+    name: Build (${{ matrix.os }}, ${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest    # Apple Silicon (ARM64)
             target: aarch64-apple-darwin
-            artifact: BlueOrb-Installer-macOS-ARM64
+            archive: BlueOrb-macOS-AppleSilicon.zip
           - os: ubuntu-latest   # Linux (x86_64)
             target: x86_64-unknown-linux-gnu
-            artifact: BlueOrb-Installer-Linux-x86_64
+            archive: BlueOrb-Linux-x86_64.tar.gz
           - os: windows-latest  # Windows (x86_64)
             target: x86_64-pc-windows-msvc
-            artifact: BlueOrb-Installer-Windows-x86_64
+            archive: BlueOrb-Windows-x64.zip
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ARM EABI Toolchain & GUI Libraries (Linux)
+      - name: Install Latest Stable Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/blueorb
+            tools/launcher
+            tools/installer
+
+      - name: Install System Libraries & ARM EABI Toolchain (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            binutils-arm-none-eabi \
-            gcc-arm-none-eabi \
-            libstdc++-arm-none-eabi-newlib \
+            build-essential \
             clang \
             pkg-config \
+            libasound2-dev \
+            libudev-dev \
             libx11-dev \
             libxcb-render0-dev \
             libxcb-shape0-dev \
@@ -44,34 +60,115 @@ jobs:
             libgl1-mesa-dev \
             libegl1-mesa-dev \
             libdbus-1-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            binutils-arm-none-eabi \
+            gcc-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib
 
       - name: Install ARM EABI Toolchain (macOS ARM64)
         if: runner.os == 'macOS'
         run: |
           brew install arm-none-eabi-binutils arm-none-eabi-gcc || brew install --cask gcc-arm-embedded
 
-      - name: Install ARM EABI Toolchain (Windows x86_64)
+      - name: Install ARM EABI Toolchain & LLVM (Windows x86_64)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           choco install gcc-arm-embedded llvm --no-progress -y
 
-      - name: Build & Test BlueOrb CLI, Launcher & GUI Installer
+      - name: Build & Test BlueOrb CLI, Launcher & Installer
         run: |
           cargo build --release --manifest-path tools/blueorb/Cargo.toml
           cargo test --release --manifest-path tools/blueorb/Cargo.toml
           cargo build --release --manifest-path tools/launcher/Cargo.toml
           cargo build --release --manifest-path tools/installer/Cargo.toml
 
-      - name: Package Cross-Platform GUI Installer Bundle
+      - name: Build 100% Legal Zero-ROM Standalone BlueOrb GUI App
         shell: pwsh
         run: |
           ./blueorb.ps1 doctor
+          ./blueorb.ps1 release
           ./blueorb.ps1 installer --no-launch
 
-      - name: Upload GUI Installer Artifact
+      - name: Package Archive & Smoke-Test Binary (macOS ARM64)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p release-assets
+          xattr -cr "dist/BlueOrb.app"
+          codesign --verify --deep "dist/BlueOrb.app"
+          "dist/BlueOrb.app/Contents/MacOS/BlueOrb" --test-pattern --headless 1 --mute
+          ditto -c -k --keepParent "dist/BlueOrb.app" "release-assets/${{ matrix.archive }}"
+
+      - name: Package Archive (Linux x86_64)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p release-assets
+          tar -czf "release-assets/${{ matrix.archive }}" -C dist BlueOrb
+
+      - name: Package Archive & Smoke-Test Binary (Windows x64)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          & "dist/BlueOrb/BlueOrb.exe" --test-pattern --headless 1 --mute
+          Compress-Archive -Path "dist/BlueOrb/*" -DestinationPath "release-assets/${{ matrix.archive }}" -Force
+
+      - name: Upload Legal Standalone App Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/BlueOrb Installer*
+          name: ${{ matrix.archive }}
+          path: release-assets/${{ matrix.archive }}
+
+  auto-release:
+    name: Publish Legal GUI Release
+    needs: build
+    if: >-
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Platform Archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+
+      - name: Determine Release Tag & Title
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "title=BlueOrb ${GITHUB_REF_NAME} — Application Graphique (Windows, macOS, Linux)" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+            echo "title=BlueOrb — Téléchargement Direct (Windows, macOS Apple Silicon, Linux)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish / Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.title }}
+          make_latest: true
+          prerelease: false
+          files: release-files/*
+          body: |
+            ## BlueOrb — Recompilateur & Moteur Natif HD / Ultra-Wide (Sans Terminal)
+
+            Téléchargez simplement la version correspondant à votre système :
+            - **Windows (64 bits)** : `BlueOrb-Windows-x64.zip` → Décompressez et lancez **`BlueOrb.exe`**
+            - **macOS (Apple Silicon M1/M2/M3/M4/M5)** : `BlueOrb-macOS-AppleSilicon.zip` → Ouvrez **`BlueOrb.app`** *(au tout premier lancement sur Mac : Réglages Système → Confidentialité et sécurité → Ouvrir quand même)*
+            - **Linux (x86_64 / Steam Deck)** : `BlueOrb-Linux-x86_64.tar.gz` → Extrayez et lancez **`./BlueOrb`**
+
+            ### Comment ça marche ?
+            1. **Premier lancement** : une fenêtre d'accueil vous demande simplement de sélectionner (ou glisser-déposer) votre propre fichier **`.3ds` décrypté**.
+            2. **Recompilation automatique** : l'application recompile le jeu en code machine natif pour votre ordinateur (aucun terminal, ni Rust, ni Git requis ; si aucun compilateur C n'est présent, un compilateur portable est téléchargé automatiquement), puis **lance le jeu dès la fin**.
+            3. **Lancements suivants** : double-cliquez sur **`BlueOrb`**, le jeu démarre **immédiatement** !
+
+            ### Raccourcis utiles en jeu
+            - **`Échap`** : Ouvrir le menu (Qualité HD/4K, Écrans, Ultra-Wide, Manette, Sauvegardes)
+            - **`F6`** : Changer de format (`5:3` → `16:9` → `21:9 Ultra-Wide` → `32:9`)
+            - **`F7`** : Détacher / regrouper l'écran tactile sur une **deuxième fenêtre**
+            - **`F11`** : Plein écran
+
+            > **Mentions légales** : Cet exécutable ne contient **aucun** code, graphique, icône, musique ni donnée de jeu sous licence Nintendo / The Pokémon Company / Game Freak. Vous devez fournir votre propre copie `.3ds` décryptée obtenue légalement depuis votre cartouche Nintendo 3DS.

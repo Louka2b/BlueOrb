@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::ProjectConfig;
-use crate::icon::generate_app_icons;
+use crate::icon::{generate_app_icons, generate_clean_orb_icons};
 use crate::rom3ds;
 use crate::toolchain::{candidate_search_dirs, find_program};
 
@@ -686,6 +686,8 @@ pub fn build_and_launch_gui_installer(project_root: &Path, launch: bool) -> Resu
 
             if icon_smdh.is_file() {
                 let _ = generate_app_icons(&icon_smdh, Some(&res_dir.join("AppIcon.icns")), None, None);
+            } else {
+                let _ = generate_clean_orb_icons(Some(&res_dir.join("AppIcon.icns")), None, None);
             }
             let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -781,4 +783,183 @@ pub fn build_and_launch_gui_installer(project_root: &Path, launch: bool) -> Resu
     }
 
     Ok(packaged_exe)
+}
+
+/// Compile et empaquette l'application graphique autonome **100 % légale** (`BlueOrb.app` / `BlueOrb.exe` / `BlueOrb`),
+/// contenant **ZÉRO octet de ROM** et **ZÉRO asset Pokémon/Nintendo** :
+/// - Premier lancement : demande simplement le fichier `.3ds` à l'utilisateur, recompile le jeu en natif avec barre de progression, puis lance le jeu automatiquement.
+/// - Lancements suivants : démarre directement dans le jeu sans aucune configuration ni terminal.
+pub fn build_clean_legal_app(project_root: &Path, launch: bool) -> Result<PathBuf, String> {
+    let host = TargetPlatform::host();
+    println!(
+        "=== Compilation de l'Application Graphique Légale BlueOrb (Zéro ROM / Zéro Terminal) — {} ===",
+        host.label()
+    );
+
+    let sdk_dir = project_root.join("build").join("recomp_sdk");
+    let dist_dir = project_root.join("dist");
+    fs::create_dir_all(&sdk_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dist_dir).map_err(|e| e.to_string())?;
+
+    let recomp_repo = sdk_dir.join("3dsrecomp");
+    let zakuro_repo = sdk_dir.join("zakuro");
+    ensure_git_repo(RECOMP3DS_GIT, &recomp_repo, "3dsrecomp")?;
+    ensure_git_repo(ZAKURO_GIT, &zakuro_repo, "zakuro")?;
+    crate::enhancer::apply_sdk_enhancements(&recomp_repo, &zakuro_repo)?;
+
+    let cargo_bin = find_program("cargo", &candidate_search_dirs())
+        .unwrap_or_else(|| PathBuf::from("cargo"));
+
+    println!("[1/2] Compilation du moteur graphique & recompilateur intégré BlueOrb...");
+    run_checked(
+        Command::new(&cargo_bin).args([
+            "build",
+            "--release",
+            "--manifest-path",
+            &zakuro_repo.join("Cargo.toml").to_string_lossy(),
+            "-p",
+            "zakuro",
+            "--bin",
+            "zakuro",
+        ]),
+        "compilation de l'application BlueOrb (zakuro)",
+    )?;
+
+    let built_bin_name = if cfg!(target_os = "windows") {
+        "zakuro.exe"
+    } else {
+        "zakuro"
+    };
+    let built_bin = zakuro_repo
+        .join("target")
+        .join("release")
+        .join(built_bin_name);
+
+    println!("[2/2] Assemblage du bundle autonome 100% légal dans dist/...");
+    let output_bundle = match host {
+        TargetPlatform::MacOsArm64 | TargetPlatform::MacOsX64 => {
+            let moltenvk_dylib = ensure_moltenvk_macos(&sdk_dir)?;
+            let tmp_stage = env::temp_dir().join(format!("blueorb_legal_sign_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&tmp_stage);
+
+            let tmp_app = tmp_stage.join("BlueOrb.app");
+            let contents = tmp_app.join("Contents");
+            let macos_dir = contents.join("MacOS");
+            let res_dir = contents.join("Resources");
+            let fw_dir = contents.join("Frameworks");
+
+            fs::create_dir_all(&macos_dir).map_err(|e| e.to_string())?;
+            fs::create_dir_all(&res_dir).map_err(|e| e.to_string())?;
+            fs::create_dir_all(&fw_dir).map_err(|e| e.to_string())?;
+
+            generate_clean_orb_icons(Some(&res_dir.join("AppIcon.icns")), None, None)?;
+
+            let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>fr</string>
+    <key>CFBundleDisplayName</key>
+    <string>BlueOrb</string>
+    <key>CFBundleExecutable</key>
+    <string>BlueOrb</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.blueorb.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>BlueOrb</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.games</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>Utilisé par les fonctionnalités photo en jeu.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Utilisé par les fonctionnalités microphone en jeu.</string>
+</dict>
+</plist>
+"#;
+            fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
+
+            let dst_exe = macos_dir.join("BlueOrb");
+            fs::copy(&built_bin, &dst_exe).map_err(|e| e.to_string())?;
+            fs::copy(&moltenvk_dylib, fw_dir.join("libMoltenVK.dylib")).map_err(|e| e.to_string())?;
+            make_executable(&dst_exe);
+
+            run_checked(
+                Command::new("codesign")
+                    .args(["--force", "--deep", "--sign", "-"])
+                    .arg(&tmp_app),
+                "signature Apple Silicon de BlueOrb.app",
+            )?;
+
+            let final_app = dist_dir.join("BlueOrb.app");
+            if final_app.exists() {
+                let _ = fs::remove_dir_all(&final_app);
+            }
+            move_dir_cross_fs(&tmp_app, &final_app)?;
+            let _ = fs::remove_dir_all(&tmp_stage);
+
+            if launch {
+                Command::new(final_app.join("Contents").join("MacOS").join("BlueOrb"))
+                    .spawn()
+                    .map_err(|e| e.to_string())?;
+            }
+            final_app
+        }
+        TargetPlatform::WindowsX64 => {
+            let pkg_dir = dist_dir.join("BlueOrb");
+            if pkg_dir.exists() {
+                let _ = fs::remove_dir_all(&pkg_dir);
+            }
+            fs::create_dir_all(&pkg_dir).map_err(|e| e.to_string())?;
+            generate_clean_orb_icons(None, Some(&pkg_dir.join("AppIcon.ico")), None)?;
+
+            let dst_exe = pkg_dir.join("BlueOrb.exe");
+            fs::copy(&built_bin, &dst_exe).map_err(|e| e.to_string())?;
+
+            if launch {
+                Command::new(&dst_exe).spawn().map_err(|e| e.to_string())?;
+            }
+            pkg_dir
+        }
+        TargetPlatform::LinuxX64 => {
+            let pkg_dir = dist_dir.join("BlueOrb");
+            if pkg_dir.exists() {
+                let _ = fs::remove_dir_all(&pkg_dir);
+            }
+            fs::create_dir_all(&pkg_dir).map_err(|e| e.to_string())?;
+            generate_clean_orb_icons(None, None, Some(&pkg_dir.join("AppIcon.png")))?;
+
+            let dst_exe = pkg_dir.join("BlueOrb");
+            fs::copy(&built_bin, &dst_exe).map_err(|e| e.to_string())?;
+            make_executable(&dst_exe);
+
+            let desktop = "[Desktop Entry]\nType=Application\nName=BlueOrb\nComment=Recompilateur et moteur natif HD/Ultra-Wide\nExec=./BlueOrb\nIcon=./AppIcon.png\nCategories=Game;\nTerminal=false\n";
+            fs::write(pkg_dir.join("BlueOrb.desktop"), desktop).map_err(|e| e.to_string())?;
+
+            if launch {
+                Command::new(&dst_exe).spawn().map_err(|e| e.to_string())?;
+            }
+            pkg_dir
+        }
+    };
+
+    println!(
+        "\nApplication autonome 100% légale prête (Zéro ROM / Zéro asset tiers) : {}",
+        output_bundle.display()
+    );
+    Ok(output_bundle)
 }

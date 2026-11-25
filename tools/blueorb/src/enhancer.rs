@@ -1,6 +1,9 @@
-// Patchs d'améliorations Remaster HD, Ultra-Wide (16:9 / 21:9 / 32:9), Double Fenêtre détachable (Haut + Bas)
-// et Interface Console Large (sans fioritures) appliqués automatiquement aux sources `build/recomp_sdk/zakuro`
-// et `build/recomp_sdk/3dsrecomp` sur Linux (x86_64), macOS (ARM64 / Intel) et Windows (x86_64).
+// Patchs BlueOrb :
+// 1. Recompilation incrémentale C (`3dsrecomp`) + compilation pleine vitesse multi-cœurs
+// 2. Améliorations Remaster HD Pokémon Saphir Alpha (Upscaling 4x Smooth-xBR, Anisotropie 16x, No Outlines HD)
+// 3. Correction complète du clignotement 60 Hz / 60 FPS (désactivation par défaut de l'interpolation + protection des UV yeux/bouches)
+// 4. Support Ultra-Wide Hor+ (16:9, 21:9, 32:9) & Double Fenêtre détachable (F7)
+// 5. Assistant Premier Lancement ultra-simple (glisser-déposer / choisir la ROM .3ds -> recompilation auto -> lancement direct aux fois suivantes)
 
 use std::fs;
 use std::path::Path;
@@ -8,8 +11,8 @@ use std::path::Path;
 pub fn apply_sdk_enhancements(recomp_repo: &Path, zakuro_repo: &Path) -> Result<(), String> {
     patch_recomp_incremental(recomp_repo)?;
     patch_zakuro_oras_enhancements(zakuro_repo)?;
-    patch_zakuro_gpu_ultrawide_upscaler_and_dual_vulkan(zakuro_repo)?;
-    patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo)?;
+    patch_zakuro_gpu_ultrawide_upscaler_antiflicker_and_dual_vulkan(zakuro_repo)?;
+    patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo)?;
     Ok(())
 }
 
@@ -50,7 +53,7 @@ fn patch_recomp_incremental(recomp_repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 2. Ajoute l'amélioration vérifiée "No Outlines (HD)" pour Pokémon Saphir Alpha USA Rev 2 (`rev3`).
+/// 2. Ajoute l'amélioration vérifiée "No Outlines (HD)" pour Pokémon Saphir Alpha USA Rev 2 (`rev3`) et Omega Ruby.
 fn patch_zakuro_oras_enhancements(zakuro_repo: &Path) -> Result<(), String> {
     let enh_path = zakuro_repo
         .join("crates")
@@ -67,12 +70,12 @@ fn patch_zakuro_oras_enhancements(zakuro_repo: &Path) -> Result<(), String> {
 
     let target = "= 000400000011C500 Pokémon Alpha Sapphire (USA)\n60 FPS | rev3 | Reshiban | The whole game runs twice as fast with it.\n28C650C1 00000000";
     let updated = "= 000400000011C500 Pokémon Alpha Sapphire (USA)\n\
-No Outlines (HD) | rev3 | BlueOrb | Removes black cel-shaded outlines around characters and Pokémon for crisp 4K rendering.\n\
+No Outlines (HD) | rev3 | BlueOrb | Retire les traits noirs autour des personnages et Pokémon pour un rendu HD net.\n\
 D3000000 00000000\n\
 00379EB4 00000000\n\
 00379EB8 00000000\n\
 D2000000 00000000\n\
-60 FPS | rev3 | Reshiban | Turbo 2x engine speed (smooth 60 FPS at 1x speed is already active via Frame Interpolation).\n\
+60 FPS | rev3 | Reshiban | Mode vitesse rapide x2.\n\
 28C650C1 00000000";
 
     if src.contains(target) {
@@ -82,16 +85,35 @@ D2000000 00000000\n\
 }
 
 /// 3. Patchs `zakuro-gpu` :
-///    - Échelle de projection 3D Hor+ Ultra-Wide (`16:9`, `21:9`, `32:9`) sans étirer les modèles ni l'UI
+///    - Correction anti-clignotement 60 FPS dans `interpolation.rs` (ne jamais interpoler les uniformes d'atlas UV yeux/bouches/eau)
+///    - Projection 3D Hor+ Ultra-Wide (`16:9`, `21:9`, `32:9`) sans étirement
 ///    - Upscaler de textures 4x Smooth-xBR/EPX + Mipmaps trilinéaires + Anisotropie 16x
-///    - Constructeur `VulkanPresenter::new_secondary` partageant le même `SharedDevice` Vulkan/Metal (zéro copie) pour la 2e fenêtre !
-fn patch_zakuro_gpu_ultrawide_upscaler_and_dual_vulkan(zakuro_repo: &Path) -> Result<(), String> {
+///    - `VulkanPresenter::new_secondary` zéro-copie pour l'écran tactile détaché
+fn patch_zakuro_gpu_ultrawide_upscaler_antiflicker_and_dual_vulkan(zakuro_repo: &Path) -> Result<(), String> {
+    // 3a. `zakuro-gpu/src/interpolation.rs` : suppression du clignotement 60 Hz sur les textures/yeux/transitions
+    let interp_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("interpolation.rs");
+    if interp_rs.exists() {
+        let mut src = fs::read_to_string(&interp_rs).map_err(|e| e.to_string())?;
+        if !src.contains("BLUEORB_ANTIFLICKER_60HZ") {
+            // Détecter aussi les pas d'atlas 1/3, 1/6, 1/12, 1/24 (yeux, bouches et sprites Pokémon 3DS) en plus des 1/64 !
+            src = src.replace(
+                "fn steps(before: f32, now: f32) -> bool {\n    let round = |value: f32| (value * 64.0).fract() == 0.0;\n    round(before) && round(now)\n}",
+                "// BLUEORB_ANTIFLICKER_60HZ\nfn steps(before: f32, now: f32) -> bool {\n    let round = |value: f32| {\n        let s64 = value * 64.0;\n        let s24 = value * 24.0;\n        (s64 - s64.round()).abs() < 1e-5 || (s24 - s24.round()).abs() < 1e-5\n    };\n    round(before) && round(now)\n}",
+            );
+            src = src.replace(
+                "        self.moved > 0 && self.matched * 2 >= self.draws && self.jumped * 4 <= self.matched",
+                "        self.moved > 0 && self.matched * 4 >= self.draws * 3 && self.jumped * 8 <= self.matched",
+            );
+            fs::write(&interp_rs, src).map_err(|e| e.to_string())?;
+        }
+    }
+
+    // 3b. `zakuro-gpu/src/lib.rs`
     let gpu_lib_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("lib.rs");
     if gpu_lib_rs.exists() {
         let src = fs::read_to_string(&gpu_lib_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_TOP_ASPECT_SCALE") {
             let addition = r#"
-// BLUEORB_TOP_ASPECT_SCALE: facteur Hor+ (400.0 / largeur_cible) pour vrai rendu 3D 16:9 / 21:9 / 32:9 sans étirement
 static BLUEORB_TOP_ASPECT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
 
 pub fn set_top_aspect_scale(top_width: f32) {
@@ -108,13 +130,14 @@ pub fn top_aspect_scale() -> f32 {
         }
     }
 
+    // 3c. `zakuro-gpu/src/raster.rs`
     let raster_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("raster.rs");
     if raster_rs.exists() {
         let src = fs::read_to_string(&raster_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_ULTRAWIDE_PLACE") {
             let needle = "fn place(registers: &[u32], shaded: &[Vertex], order: Option<&[usize]>, viewport: (f32, f32, f32, f32)) -> Placement {";
             let replacement = r#"fn place(registers: &[u32], shaded_in: &[Vertex], order: Option<&[usize]>, viewport: (f32, f32, f32, f32)) -> Placement {
-    // BLUEORB_ULTRAWIDE_PLACE: élargit le champ de vision 3D (Hor+) sur l'écran supérieur (240x400) sans étirer les modèles ni l'interface 2D
+    // BLUEORB_ULTRAWIDE_PLACE
     let aspect_scale = crate::top_aspect_scale();
     let uw_storage: Vec<Vertex>;
     let shaded: &[Vertex] = if aspect_scale < 0.999 && (viewport.2 - 240.0).abs() < 1.0 && (viewport.3 - 400.0).abs() < 1.0 {
@@ -142,12 +165,8 @@ pub fn top_aspect_scale() -> f32 {
         }
     }
 
-    let glsl_rs = zakuro_repo
-        .join("crates")
-        .join("zakuro-gpu")
-        .join("src")
-        .join("shader")
-        .join("glsl.rs");
+    // 3d. `zakuro-gpu/src/shader/glsl.rs`
+    let glsl_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("shader").join("glsl.rs");
     if glsl_rs.exists() {
         let src = fs::read_to_string(&glsl_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_GLSL_ULTRAWIDE") {
@@ -166,12 +185,8 @@ pub fn top_aspect_scale() -> f32 {
         }
     }
 
-    let hw_rs = zakuro_repo
-        .join("crates")
-        .join("zakuro-gpu")
-        .join("src")
-        .join("raster")
-        .join("hardware.rs");
+    // 3e. `zakuro-gpu/src/raster/hardware.rs`
+    let hw_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("raster").join("hardware.rs");
     if hw_rs.exists() {
         let mut src = fs::read_to_string(&hw_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_HD_UPSCALE") {
@@ -196,7 +211,7 @@ pub fn top_aspect_scale() -> f32 {
                 "                        None => {\n                            let (view, picture) = self.texture_hd(bound)?;",
             );
             let target_fn = "    fn texture(&mut self, bound: &BoundTexture) -> Result<(vk::ImageView, Option<u32>), String> {";
-            let hd_fn_and_orig = r#"    // BLUEORB_HD_UPSCALE: Upscaling temps-réel 4x Smooth-xBR/EPX + Mipmaps trilinéaires pour les textures 3DS
+            let hd_fn_and_orig = r#"    // BLUEORB_HD_UPSCALE: Upscaling temps-réel 4x Smooth-xBR/EPX + Mipmaps trilinéaires
     fn texture_hd(&mut self, bound: &BoundTexture) -> Result<(vk::ImageView, Option<u32>), String> {
         let size = (bound.width, bound.height);
         if let Some((view, smallest)) = bound.replacement.as_ref().and_then(|material| self.replacement(material, size)) {
@@ -241,12 +256,8 @@ pub fn top_aspect_scale() -> f32 {
         fs::write(&hw_rs, src).map_err(|e| e.to_string())?;
     }
 
-    let vk_rs = zakuro_repo
-        .join("crates")
-        .join("zakuro-gpu")
-        .join("src")
-        .join("backend")
-        .join("vulkan.rs");
+    // 3f. `zakuro-gpu/src/backend/vulkan.rs`
+    let vk_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("backend").join("vulkan.rs");
     if vk_rs.exists() {
         let mut src = fs::read_to_string(&vk_rs).map_err(|e| e.to_string())?;
         if !src.contains("pub fn new_secondary(") {
@@ -433,11 +444,33 @@ pub fn top_aspect_scale() -> f32 {
     Ok(())
 }
 
-/// 4. Interface Console Large (façon SteamOS / Zelda64Recomp : 2 colonnes spacieuses, zéro émoji, schémas d'écrans vectoriels)
-fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Result<(), String> {
+/// 4. Assistant Premier Lancement ultra-intuitif + Interface Console Large + Double Fenêtre
+fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Path) -> Result<(), String> {
     let zakuro_src = zakuro_repo.join("crates").join("zakuro").join("src");
 
-    // 4a. `gui.rs` : Thème sombre neutre sobre & lisible
+    // 4a. `main.rs` : pas de fenêtre console noire sur Windows !
+    let main_rs = zakuro_src.join("main.rs");
+    if main_rs.exists() {
+        let src = fs::read_to_string(&main_rs).map_err(|e| e.to_string())?;
+        if !src.contains("windows_subsystem") {
+            let patched = format!(
+                "#![cfg_attr(target_os = \"windows\", windows_subsystem = \"windows\")]\n{src}"
+            );
+            fs::write(&main_rs, patched).map_err(|e| e.to_string())?;
+        }
+    }
+
+    // 4b. `recompile.rs` : compiler à pleine vitesse sur les cœurs Performance (4x-5x plus rapide au 1er lancement !)
+    let recompile_rs = zakuro_src.join("recompile.rs");
+    if recompile_rs.exists() {
+        let src = fs::read_to_string(&recompile_rs).map_err(|e| e.to_string())?;
+        if src.contains("background: true") {
+            fs::write(&recompile_rs, src.replace("background: true", "background: false"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // 4c. `gui.rs` : Thème sombre sobre & lisible
     let gui_rs = zakuro_src.join("gui.rs");
     if gui_rs.exists() {
         let mut src = fs::read_to_string(&gui_rs).map_err(|e| e.to_string())?;
@@ -451,7 +484,7 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
         }
     }
 
-    // 4b. `settings.rs`
+    // 4d. `settings.rs` : `blueorb_rom`, valeurs par défaut optimales (Français, 5x 1440p, No Outlines HD, 0 clignotement)
     let settings_rs = zakuro_src.join("settings.rs");
     if settings_rs.exists() {
         let mut src = fs::read_to_string(&settings_rs).map_err(|e| e.to_string())?;
@@ -459,6 +492,24 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
             src = src.replace(
                 "fn path() -> Option<PathBuf> {",
                 "fn path() -> Option<PathBuf> {\n    if let Some(custom) = std::env::var_os(\"ZAKURO_SETTINGS_PATH\").filter(|v| !v.is_empty()) {\n        return Some(PathBuf::from(custom));\n    }",
+            );
+        }
+        if !src.contains("blueorb_rom") {
+            src = src.replace(
+                "    pub games: Option<PathBuf>,",
+                "    pub games: Option<PathBuf>,\n    pub blueorb_rom: Option<PathBuf>,",
+            );
+            src = src.replace(
+                "            games: None,\n            language: Language::English,\n            renderer: Renderer::Vulkan,\n            hardware_rasterizer: true,\n            resolution: 3,",
+                "            games: None,\n            blueorb_rom: None,\n            language: Language::French,\n            renderer: Renderer::Vulkan,\n            hardware_rasterizer: true,\n            resolution: 5,",
+            );
+            src = src.replace(
+                "            filter: Filter::Smooth,",
+                "            filter: Filter::Sharp,",
+            );
+            src = src.replace(
+                "            enhancements: std::collections::BTreeMap::new(),",
+                "            enhancements: std::collections::BTreeMap::from([(\"000400000011C500\".to_owned(), vec![\"No Outlines (HD)\".to_owned()])]),",
             );
         }
         if !src.contains("SeparateWindows") {
@@ -500,19 +551,30 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
         fs::write(&settings_rs, src).map_err(|e| e.to_string())?;
     }
 
-    // 4c. `menus.rs` : Grand Menu Console unifié à onglets latéraux (Partie / Écrans / Graphismes / Contrôles / Avancé)
+    // 4e. `menus.rs` : Assistant d'accueil 1er lancement (`library`) + Menu Pause accessible (`game`)
     let menus_rs = zakuro_src.join("menus.rs");
     if menus_rs.exists() {
         let mut src = fs::read_to_string(&menus_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_WIDE_CONSOLE_MENU") {
             src = src.replace(
                 "    CheatsFolder,\n}",
-                "    CheatsFolder,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
+                "    CheatsFolder,\n    PickRomFile,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
             );
             src = src.replace(
                 "    pub menu_open: bool,",
                 "    pub menu_open: bool,\n    pub tab: u8,",
             );
+
+            // Remplacement de `Menus::library` par l'Assistant Premier Lancement ultra-accessible
+            let lib_start = "    /// the library, filling the window, waiting are the games waiting for their turn to recompile\n    pub fn library(";
+            let game_start = "    /// what goes over a running game, the menu when it's open and the frame rate when asked for\n    #[allow(clippy::too_many_arguments)]\n    pub fn game(";
+            let Some(i0) = src.find(lib_start) else {
+                return Err("Impossible de localiser `Menus::library` dans `menus.rs`".into());
+            };
+            let Some(i1) = src.find(game_start) else {
+                return Err("Impossible de localiser `Menus::game` dans `menus.rs`".into());
+            };
+            src.replace_range(i0..i1, ONBOARDING_LIBRARY_FN_RS);
 
             let old_game_fn = r#"    /// what goes over a running game, the menu when it's open and the frame rate when asked for
     #[allow(clippy::too_many_arguments)]
@@ -643,7 +705,7 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
     }"#;
 
             if !src.contains(old_game_fn) {
-                return Err("Impossible de localiser `Menus::game` dans `crates/zakuro/src/menus.rs`".into());
+                return Err("Impossible de localiser le corps de `Menus::game` dans `menus.rs`".into());
             }
             src = src.replace(old_game_fn, WIDE_CONSOLE_GAME_MENU_RS);
             src.push_str(WIDE_CONSOLE_WIDGET_HELPERS_RS);
@@ -651,7 +713,7 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
         }
     }
 
-    // 4d. `present.rs`
+    // 4f. `present.rs`
     let present_rs = zakuro_src.join("present.rs");
     if present_rs.exists() {
         let mut src = fs::read_to_string(&present_rs).map_err(|e| e.to_string())?;
@@ -680,7 +742,7 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
         }
     }
 
-    // 4e. `lib.rs`
+    // 4g. `lib.rs` : auto-boot si déjà recompilé, recompilation auto dès sélection/glisser-déposer de la ROM, puis lancement auto !
     let lib_rs = zakuro_src.join("lib.rs");
     if lib_rs.exists() {
         let mut src = fs::read_to_string(&lib_rs).map_err(|e| e.to_string())?;
@@ -702,8 +764,72 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
                 "    layout: Screens,\n    last_combined_layout: Screens,",
             );
 
+            // Toujours activer le profil matériel New 3DS pour Pokémon Saphir Alpha
+            src = src.replace(
+                "            new3ds: self.options.new3ds,",
+                "            new3ds: true,",
+            );
+
+            // Démarrage intelligent : si une ROM a déjà été configurée, lancer tout de suite le jeu (ou reprendre la recompilation)
+            let start_needle = r#"        } else if let Some(rom) = self.options.rom.clone() {
+            if let Err(error) = self.play(Path::new(&rom)) {
+                eprintln!("zakuro: {error}");
+                std::process::exit(1);
+            }
+        }"#;
+            let start_rep = r#"        } else if let Some(rom) = self.options.rom.clone() {
+            if let Err(error) = self.play(Path::new(&rom)) {
+                eprintln!("zakuro: {error}");
+                std::process::exit(1);
+            }
+        } else if let Some(rom) = self.settings.blueorb_rom.clone().filter(|p| p.is_file()) {
+            self.accept_rom_file(rom);
+        }"#;
+            src = src.replace(start_needle, start_rep);
+
             let set_layout_needle = "    fn set_layout(&mut self, layout: Screens) {";
-            let set_layout_rep = r#"    fn toggle_dual_windows(&mut self) {
+            let set_layout_rep = r#"    fn accept_rom_file(&mut self, path: PathBuf) {
+        let title = match zakuro_fs::Title::load(&path) {
+            Ok(t) => t,
+            Err(err) => {
+                self.menus.message = Some(format!(
+                    "Impossible d'ouvrir ce fichier ({err}).\n\nVérifiez qu'il s'agit bien d'un fichier de jeu Nintendo 3DS décrypté (.3ds ou .cci)."
+                ));
+                return;
+            }
+        };
+        let program_id = title.program_id();
+        self.settings.blueorb_rom = Some(path.clone());
+        if let Some(parent) = path.parent() {
+            if self.settings.games.is_none() {
+                self.settings.games = Some(parent.to_path_buf());
+            }
+        }
+        // Activer par défaut le mode Sans traits noirs (HD) pour Saphir Alpha / Rubis Oméga
+        let tid_hex = format!("{program_id:016X}");
+        if (program_id == 0x0004_0000_0011_C500 || program_id == 0x0004_0000_0011_C400)
+            && !self.settings.enhancements.contains_key(&tid_hex)
+        {
+            self.settings.enhancements.insert(tid_hex, vec!["No Outlines (HD)".to_owned()]);
+        }
+        self.settings.save();
+
+        let already_recompiled = self.linked.is_some_and(|l| l.program_id() == program_id)
+            || zakuro_core::recompiled::installed(program_id).is_some();
+
+        if already_recompiled {
+            if let Err(error) = self.play(&path) {
+                self.menus.message = Some(error);
+            }
+        } else {
+            self.menus.menu_open = false;
+            self.game = None;
+            // `download = true` télécharge automatiquement Zig en arrière-plan si aucun compilateur C n'est présent sur l'ordinateur !
+            self.recompile(vec![Wanted { program_id, path }], true);
+        }
+    }
+
+    fn toggle_dual_windows(&mut self) {
         let target = if self.active.layout == Screens::SeparateWindows {
             self.last_combined_layout
         } else {
@@ -739,6 +865,46 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
         }"#;
             src = src.replace(set_layout_needle, set_layout_rep);
 
+            // Permettre à `next_recompile` de compiler directement un fichier `.3ds` unique sans scan de dossier
+            let next_recomp_needle = r#"        if let Some(game) = self.library.games.iter().find(|game| game.path == wanted.path) {
+            let update = game.update.as_ref().map(|update| update.path.as_path());
+            self.jobs.push(Job::start(&game.path, update, game.program_id, &game.name, self.data_dir.as_deref(), toolchain));
+        }"#;
+            let next_recomp_rep = r#"        if let Some(game) = self.library.games.iter().find(|game| game.path == wanted.path) {
+            let update = game.update.as_ref().map(|update| update.path.as_path());
+            self.jobs.push(Job::start(&game.path, update, game.program_id, &game.name, self.data_dir.as_deref(), toolchain));
+        } else if wanted.path.is_file() {
+            let addon_upd = library::addons_beside(&wanted.path).and_then(|(u, _, _)| u.map(|x| x.path));
+            let gname = wanted
+                .path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Pokémon Saphir Alpha".to_owned());
+            self.jobs.push(Job::start(
+                &wanted.path,
+                addon_upd.as_deref(),
+                wanted.program_id,
+                &gname,
+                self.data_dir.as_deref(),
+                toolchain,
+            ));
+        }"#;
+            src = src.replace(next_recomp_needle, next_recomp_rep);
+
+            // Dès que la recompilation initiale se termine (`Stage::Done`), lancer automatiquement le jeu !
+            let poll_done_needle = "                Stage::Done => {\n                    self.library.recompiled(program_id);";
+            let poll_done_rep = r#"                Stage::Done => {
+                    self.library.recompiled(program_id);
+                    if self.game.is_none() {
+                        if let Some(rom) = self.settings.blueorb_rom.clone().filter(|p| p.is_file()) {
+                            if let Err(error) = self.play(&rom) {
+                                self.menus.message = Some(error);
+                            }
+                            continue;
+                        }
+                    }"#;
+            src = src.replace(poll_done_needle, poll_done_rep);
+
             let win_ev_needle = "    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {";
             let win_ev_rep = r#"    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.bottom_window.as_ref().is_some_and(|w| w.id() == id) {
@@ -772,6 +938,12 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
             return;
         }"#;
             src = src.replace(win_ev_needle, win_ev_rep);
+
+            // Glisser-déposer direct d'un fichier .3ds sur la fenêtre principale !
+            src = src.replace(
+                "            WindowEvent::RedrawRequested => self.step(event_loop),",
+                "            WindowEvent::DroppedFile(path) => {\n                if self.game.is_none() || self.menus.menu_open {\n                    self.accept_rom_file(path);\n                }\n            }\n            WindowEvent::RedrawRequested => self.step(event_loop),",
+            );
 
             let key_needle = "                KeyCode::F9 => self.set_layout(self.active.layout.next()),";
             let key_rep = r#"                KeyCode::F6 => {
@@ -831,19 +1003,30 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
 
             src = src.replace(
                 "            Action::Quit => event_loop.exit(),",
-                "            Action::ToggleDualWindows => self.toggle_dual_windows(),\n            Action::SetLayout(layout) => self.set_layout(layout),\n            Action::SetTopShape(shape) => self.set_top_shape(shape),\n            Action::Quit => event_loop.exit(),",
+                r#"            Action::PickRomFile => {
+                let picked = rfd::FileDialog::new()
+                    .set_title("Sélectionnez votre fichier Pokémon Saphir Alpha (.3ds)")
+                    .add_filter("Jeu Nintendo 3DS (.3ds, .cci)", &["3ds", "cci", "cxi"])
+                    .pick_file();
+                if let Some(file) = picked {
+                    self.accept_rom_file(file);
+                }
+            }
+            Action::ToggleDualWindows => self.toggle_dual_windows(),
+            Action::SetLayout(layout) => self.set_layout(layout),
+            Action::SetTopShape(shape) => self.set_top_shape(shape),
+            Action::Quit => event_loop.exit(),"#,
             );
 
             src = src.replace(
-                "Some(game) => format!(\"Zakuro - {} - {}\", game.name, game.system.status_line()),",
-                "Some(game) => format!(\"{} — {}\", game.name, game.system.status_line()),",
+                "Some(game) => format!(\"Zakuro - {} - {}\", game.name, game.system.status_line()),\n                    None => \"Zakuro\".to_owned(),",
+                "Some(game) => game.name.clone(),\n                    None => \"BlueOrb\".to_owned(),",
             );
             src = src.replace(
                 "Window::default_attributes().with_title(\"Zakuro\")",
-                "Window::default_attributes().with_title(\"Pokémon Alpha Sapphire\")",
+                "Window::default_attributes().with_title(\"BlueOrb\")",
             );
 
-            // Fournir `cheats` et `settings` directement au menu unifié `menus.game(...)`
             src = src.replace(
                 "        let cheats = self.game.as_ref().filter(|_| self.menus.cheats_open).map(|game| {",
                 "        let cheats = self.game.as_ref().filter(|_| self.menus.cheats_open || self.menus.menu_open).map(|game| {",
@@ -864,7 +1047,7 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
             let bot_scale = self.scale.clamp(2, 4);
             let bot_size = winit::dpi::LogicalSize::new(320 * bot_scale, 240 * bot_scale);
             let attrs = Window::default_attributes()
-                .with_title("Pokémon Saphir Alpha — Écran Tactile")
+                .with_title("Écran Tactile — PokéMulti-Navi")
                 .with_inner_size(bot_size);
             let shared = self.backend.as_ref().and_then(Backend::shared_device);
             match Backend::create_secondary(event_loop, attrs, shared) {
@@ -932,7 +1115,7 @@ fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Resul
     Ok(())
 }
 
-/// Génère le fichier `settings.toml` pré-optimisé (par défaut : overlay classique `stacked` + `5:3` `console`).
+/// Génère le fichier `settings.toml` (`frame_interpolation = false` par défaut pour zéro clignotement 60 Hz !).
 pub fn write_remaster_settings_toml(
     settings_path: &Path,
     title_id: &str,
@@ -977,13 +1160,13 @@ pub fn write_remaster_settings_toml(
     let enh_list = active_enhancements.join(", ");
 
     let toml_text = format!(
-        r#"# Configuration générée par BlueOrb
+        r#"# Configuration BlueOrb (zéro clignotement 60 Hz par défaut)
 language = "{lang}"
 renderer = "vulkan"
 hardware_rasterizer = true
 resolution = {res}
 texture_packs = true
-frame_interpolation = true
+frame_interpolation = false
 recompiled = true
 scale = 2
 layout = "{layout}"
@@ -1013,7 +1196,7 @@ show_fps = false
 }
 
 const CONSOLE_THEME_FN_RS: &str = r#"
-// BLUEORB_CONSOLE_THEME: Palette mate sombre sobre, typographie large et lisible (style SteamOS / RecompUI)
+// BLUEORB_CONSOLE_THEME
 fn apply_blueorb_console_theme(ctx: &egui::Context) {
     use egui::{Color32, CornerRadius, CursorIcon, FontFamily, FontId, Shadow, Stroke, TextStyle, Theme};
     ctx.set_theme(Theme::Dark);
@@ -1084,7 +1267,152 @@ fn apply_blueorb_console_theme(ctx: &egui::Context) {
 }
 "#;
 
-const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Menu Console plein écran translucide basé sur egui::Panel (zéro bug d'alignement)
+const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Assistant d'accueil ultra-simple au premier lancement :
+    /// 1. Demande où est le fichier `.3ds` (clic ou glisser-déposer)
+    /// 2. Recompile automatiquement le jeu (en téléchargeant Zig tout seul si besoin)
+    /// 3. Lance le jeu dès que c'est prêt (et directement à chaque ouverture suivante !)
+    pub fn library(&mut self, ui: &mut egui::Ui, library: &Library, settings: &Settings, jobs: &[Job], waiting: &[Wanted]) -> Vec<Action> {
+        let mut actions = Vec::new();
+        let _ = (
+            self.background.get(ui.ctx(), None),
+            cover(Vec2::ONE, [1, 1]),
+            idle(library.games.iter().map(Game::wanted), jobs, waiting),
+            &mut self.icons,
+            ICON_SIZE,
+        );
+
+        let active_job = jobs.iter().find(|j| !j.stage().finished());
+        let failed_job = jobs.iter().rev().find_map(|j| match j.stage() {
+            Stage::Failed(err) if err != "cancelled" => Some((j.program_id, err)),
+            _ => None,
+        });
+
+        let panel_frame = egui::Frame::NONE
+            .fill(Color32::from_rgb(16, 18, 24))
+            .inner_margin(egui::Margin::symmetric(28, 28));
+
+        egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| {
+            let avail_w = ui.available_width();
+            let avail_h = ui.available_height();
+            let card_w = (avail_w - 16.0).clamp(280.0, 560.0);
+            let top_pad = ((avail_h - 360.0) * 0.42).max(8.0);
+
+            ui.vertical_centered(|ui| {
+                ui.add_space(top_pad);
+
+                console_card(ui, card_w, |ui, cw| {
+                    if let Some(job) = active_job {
+                        ui.ctx().request_repaint();
+                        ui.label(
+                            RichText::new("Installation de votre jeu en cours…")
+                                .size(21.0)
+                                .strong()
+                                .color(Color32::WHITE),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("BlueOrb convertit votre cartouche en application native pour votre ordinateur. Cette opération ne se fait qu'une seule fois.")
+                                .size(13.5)
+                                .color(Color32::from_rgb(154, 162, 178)),
+                        );
+                        ui.add_space(18.0);
+
+                        let stage = job.stage();
+                        let step_txt = match &stage {
+                            Stage::Downloading(p) => format!("Téléchargement automatique des outils ({:.0}%)…", p * 100.0),
+                            Stage::Generating => "Analyse de la ROM et extraction des fonctions…".to_owned(),
+                            Stage::Compiling { done, total } => format!("Optimisation native pour votre processeur ({done} / {total})…"),
+                            Stage::Installing => "Finalisation de l'application…".to_owned(),
+                            Stage::Done => "Terminé ! Lancement du jeu…".to_owned(),
+                            Stage::Failed(e) => format!("Erreur : {e}"),
+                        };
+
+                        ui.label(RichText::new(step_txt).size(14.5).strong().color(Color32::from_rgb(230, 236, 246)));
+                        ui.add_space(8.0);
+
+                        let mins = job.elapsed().as_secs() / 60;
+                        let secs = job.elapsed().as_secs() % 60;
+                        ui.add(
+                            egui::ProgressBar::new(stage.fraction())
+                                .desired_width(cw)
+                                .desired_height(22.0)
+                                .animate(true)
+                                .text(format!("{:.0}%  ·  {mins}:{secs:02}", stage.fraction() * 100.0)),
+                        );
+
+                        ui.add_space(14.0);
+                        ui.label(
+                            RichText::new("Le jeu démarrera automatiquement dès que la barre atteindra 100%. Aux prochains lancements, il s'ouvrira instantanément.")
+                                .size(12.5)
+                                .color(Color32::from_rgb(136, 144, 160)),
+                        );
+                        ui.add_space(14.0);
+                        if console_secondary_button(ui, 150.0, 36.0, "Annuler", true) {
+                            actions.push(Action::CancelRecompile(job.program_id));
+                        }
+                    } else {
+                        ui.label(
+                            RichText::new("Bienvenue sur BlueOrb")
+                                .size(23.0)
+                                .strong()
+                                .color(Color32::WHITE),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("Pour lancer Pokémon Saphir Alpha en version PC / Mac native, indiquez simplement où se trouve votre fichier de jeu .3ds décrypté.")
+                                .size(14.0)
+                                .color(Color32::from_rgb(160, 168, 184)),
+                        );
+
+                        ui.add_space(18.0);
+
+                        // Étapes simples et rassurantes
+                        egui::Frame::NONE
+                            .fill(Color32::from_rgb(18, 21, 28))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 14)))
+                            .corner_radius(egui::CornerRadius::same(9))
+                            .inner_margin(egui::Margin::same(14))
+                            .show(ui, |ui| {
+                                ui.set_width((cw - 28.0).max(160.0));
+                                ui.label(RichText::new("1.  Cliquez sur le bouton ci-dessous (ou glissez votre fichier .3ds ici).").size(13.5).color(Color32::from_rgb(222, 228, 238)));
+                                ui.add_space(4.0);
+                                ui.label(RichText::new("2.  BlueOrb installe et optimise le jeu tout seul (2 à 4 min la 1re fois).").size(13.5).color(Color32::from_rgb(222, 228, 238)));
+                                ui.add_space(4.0);
+                                ui.label(RichText::new("3.  Ensuite, l'application lance directement votre jeu à chaque ouverture !").size(13.5).color(Color32::from_rgb(222, 228, 238)));
+                            });
+
+                        ui.add_space(18.0);
+
+                        if console_primary_button(ui, cw, 48.0, "Choisir mon fichier de jeu (.3ds)…") {
+                            actions.push(Action::PickRomFile);
+                        }
+
+                        if let Some(saved_rom) = settings.blueorb_rom.as_ref().filter(|p| p.is_file()) {
+                            ui.add_space(10.0);
+                            let fname = saved_rom.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            if console_secondary_button(ui, cw, 42.0, &format!("Lancer {fname}"), true) {
+                                actions.push(Action::Play(saved_rom.clone()));
+                            }
+                        }
+
+                        if let Some((_, err)) = failed_job {
+                            ui.add_space(12.0);
+                            ui.label(
+                                RichText::new(format!("Dernière erreur : {err}"))
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(252, 165, 165)),
+                            );
+                        }
+                    }
+                });
+            });
+        });
+        actions
+    }
+
+"#;
+
+const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Menu Pause accessible et clair pour tous les joueurs
     #[allow(clippy::too_many_arguments)]
     pub fn game(
         &mut self,
@@ -1157,18 +1485,18 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
         }
 
         let nav_tabs: [(u8, &str); 5] = [
-            (0, "Partie"),
-            (1, "Écrans & Format"),
-            (2, "Graphismes & Son"),
-            (3, "Contrôles"),
-            (4, "Codes & Réseau"),
+            (0, "Jeu & Sauvegardes"),
+            (1, "Écrans & Ultra-Wide"),
+            (2, "Qualité & Son"),
+            (3, "Touches & Manette"),
+            (4, "Multijoueur & Bonus"),
         ];
 
         let total_w = ui.available_width();
         let wide_mode = total_w >= 560.0;
 
         if wide_mode {
-            let sidebar_w = 212.0;
+            let sidebar_w = 216.0;
             let sidebar_frame = egui::Frame::NONE
                 .fill(Color32::from_rgba_unmultiplied(13, 15, 20, 248))
                 .inner_margin(egui::Margin::symmetric(16, 22));
@@ -1181,26 +1509,24 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 .show(ui, |ui| {
                     let item_w = ui.available_width();
 
-                    // Pied de la barre latérale ancré proprement en bas
                     egui::Panel::bottom("blueorb_pause_sidebar_footer")
                         .resizable(false)
                         .show_separator_line(false)
                         .frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 0, right: 0, top: 10, bottom: 0 }))
                         .show(ui, |ui| {
-                            if console_primary_button(ui, item_w, 42.0, "Reprendre") {
+                            if console_primary_button(ui, item_w, 42.0, "Reprendre le jeu") {
                                 actions.push(Action::Resume);
                             }
                             ui.add_space(8.0);
-                            if console_danger_button(ui, item_w, 38.0, "Quitter le jeu") {
+                            if console_danger_button(ui, item_w, 38.0, "Quitter") {
                                 actions.push(Action::Quit);
                             }
                         });
 
-                    // Haut + onglets de la barre latérale
                     ui.label(RichText::new(name).size(16.5).strong().color(Color32::WHITE));
                     ui.add_space(2.0);
                     ui.label(
-                        RichText::new(if recompiled { "Exécution native AOT" } else { "Mode interprété" })
+                        RichText::new(if recompiled { "Version PC / Mac Native" } else { "Mode compatibilité" })
                             .size(12.5)
                             .color(Color32::from_rgb(132, 140, 156)),
                     );
@@ -1214,7 +1540,6 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     }
                 });
         } else {
-            // Barre supérieure si la fenêtre est étroite (ex: 400px à l'échelle 1x)
             let top_frame = egui::Frame::NONE
                 .fill(Color32::from_rgba_unmultiplied(13, 15, 20, 248))
                 .inner_margin(egui::Margin::symmetric(12, 10));
@@ -1315,21 +1640,21 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
     ) {
         match self.tab {
             0 => {
-                // ONGLET 0 : PARTIE
-                ui.label(RichText::new("Partie en cours").size(22.0).strong().color(Color32::WHITE));
+                // ONGLET 0 : JEU & SAUVEGARDES
+                ui.label(RichText::new("Jeu en pause").size(22.0).strong().color(Color32::WHITE));
                 let layout_desc = match active_layout {
-                    Screens::Stacked => "Écrans superposés (3DS)",
-                    Screens::LargeTop => "Grand écran supérieur",
+                    Screens::Stacked => "Écrans superposés (Classique)",
+                    Screens::LargeTop => "Grand écran principal",
                     Screens::SideBySide => "Écrans côte à côte",
-                    Screens::SeparateWindows => "Deux fenêtres indépendantes",
-                    Screens::TopOnly => "Écran supérieur seul",
+                    Screens::SeparateWindows => "Deux fenêtres détachées",
+                    Screens::TopOnly => "Écran haut seul",
                     Screens::BottomOnly => "Écran tactile seul",
                 };
                 let ratio_desc = match active_top_shape {
-                    TopShape::Console => "5:3 Original",
-                    TopShape::Wide16x9 => "16:9 Large",
-                    TopShape::Wide21x9 => "21:9 Ultra-Wide",
-                    TopShape::Wide32x9 => "32:9 Super Large",
+                    TopShape::Console => "Format 5:3 d'origine",
+                    TopShape::Wide16x9 => "Format 16:9",
+                    TopShape::Wide21x9 => "Format 21:9 Ultra-Wide",
+                    TopShape::Wide32x9 => "Format 32:9",
                 };
                 ui.label(
                     RichText::new(format!("{ratio_desc}  ·  {layout_desc}"))
@@ -1357,10 +1682,10 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 ui.add_space(18.0);
 
                 console_card(ui, width, |ui, cw| {
-                    let state_info = saved.unwrap_or("Emplacement vide");
-                    ui.label(RichText::new("Sauvegardes rapides").size(16.5).strong().color(Color32::WHITE));
+                    let state_info = saved.unwrap_or("Aucune sauvegarde sur ce numéro");
+                    ui.label(RichText::new("Sauvegarde instantanée").size(16.5).strong().color(Color32::WHITE));
                     ui.label(
-                        RichText::new(format!("Slot sélectionné : {}  —  {state_info}", self.slot))
+                        RichText::new(format!("Emplacement n°{}  —  {state_info}", self.slot))
                             .size(13.0)
                             .color(Color32::from_rgb(148, 156, 172)),
                     );
@@ -1377,10 +1702,10 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     let half = (cw - 10.0) / 2.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
-                        if console_secondary_button(ui, half, 42.0, &format!("Sauvegarder slot {}  (F5)", self.slot), true) {
+                        if console_secondary_button(ui, half, 42.0, &format!("Sauvegarder ici  (F5)"), true) {
                             actions.push(Action::SaveState);
                         }
-                        if console_secondary_button(ui, half, 42.0, &format!("Charger slot {}  (F8)", self.slot), saved.is_some()) {
+                        if console_secondary_button(ui, half, 42.0, &format!("Charger cet emplacement  (F8)"), saved.is_some()) {
                             actions.push(Action::LoadState);
                         }
                     });
@@ -1390,8 +1715,8 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 let half_bot = (width - 10.0) / 2.0;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    if console_secondary_button(ui, half_bot, 40.0, "Bibliothèque", true) {
-                        actions.push(Action::Library);
+                    if console_secondary_button(ui, half_bot, 40.0, "Changer de fichier ROM…", true) {
+                        actions.push(Action::PickRomFile);
                     }
                     if console_danger_button(ui, half_bot, 40.0, "Quitter le jeu") {
                         actions.push(Action::Quit);
@@ -1409,24 +1734,23 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
             }
 
             1 => {
-                // ONGLET 1 : ÉCRANS & FORMAT ULTRA-WIDE
-                ui.label(RichText::new("Disposition des écrans").size(22.0).strong().color(Color32::WHITE));
+                // ONGLET 1 : ÉCRANS & ULTRA-WIDE
+                ui.label(RichText::new("Écrans & Ultra-Wide").size(22.0).strong().color(Color32::WHITE));
                 ui.label(
-                    RichText::new("Choisissez l'agencement ou détachez l'écran tactile sur une deuxième fenêtre (touche F7).")
+                    RichText::new("Gardez la vue 3DS classique ou détachez l'écran tactile sur une 2e fenêtre (raccourci F7).")
                         .size(14.0)
                         .color(Color32::from_rgb(148, 156, 172)),
                 );
                 ui.add_space(14.0);
 
-                // Grille 2x2 de grandes cartes horizontales lisibles (aucune coupure de texte !)
                 let card_w = (width - 12.0) / 2.0;
                 let row1 = [
-                    (Screens::Stacked, "Superposé (Base)", "Écran haut au-dessus du bas", 0u8),
-                    (Screens::SeparateWindows, "Deux fenêtres (F7)", "Détacher l'écran tactile", 3),
+                    (Screens::Stacked, "Classique (Par défaut)", "Écran haut au-dessus du bas", 0u8),
+                    (Screens::SeparateWindows, "Deux fenêtres (F7)", "Détacher l'écran tactile à part", 3),
                 ];
                 let row2 = [
-                    (Screens::LargeTop, "Grand écran", "Grand écran haut + petit bas", 1u8),
-                    (Screens::SideBySide, "Côte à côte", "Gauche et droite alignés", 2),
+                    (Screens::LargeTop, "Grand écran", "Grand écran haut + petit tactile", 1u8),
+                    (Screens::SideBySide, "Côte à côte", "Les deux écrans côte à côte", 2),
                 ];
                 for row in [row1, row2] {
                     ui.horizontal(|ui| {
@@ -1446,9 +1770,9 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 }
 
                 ui.add_space(10.0);
-                ui.label(RichText::new("Format 3D & Ultra-Wide  (F6)").size(18.0).strong().color(Color32::WHITE));
+                ui.label(RichText::new("Largeur de l'écran & Ultra-Wide  (F6)").size(18.0).strong().color(Color32::WHITE));
                 ui.label(
-                    RichText::new("Élargit le champ de vision 3D horizontal sans étirer les modèles ni l'interface.")
+                    RichText::new("Agrandit la vue 3D sur les côtés sans déformer ni étirer vos Pokémon.")
                         .size(13.5)
                         .color(Color32::from_rgb(148, 156, 172)),
                 );
@@ -1456,7 +1780,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
 
                 let shape_opts = [
                     (TopShape::Console, "5:3 Base"),
-                    (TopShape::Wide16x9, "16:9"),
+                    (TopShape::Wide16x9, "16:9 Large"),
                     (TopShape::Wide21x9, "21:9 Ultra-Wide"),
                     (TopShape::Wide32x9, "32:9"),
                 ];
@@ -1466,101 +1790,78 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
 
                 ui.add_space(16.0);
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Taille de la fenêtre").size(15.0).strong().color(Color32::WHITE));
+                    ui.label(RichText::new("Taille de la fenêtre sur le bureau").size(15.0).strong().color(Color32::WHITE));
                     ui.add_space(6.0);
-                    let scales = [(1u32, "1x"), (2, "2x"), (3, "3x"), (4, "4x"), (5, "5x")];
-                    if let Some(s) = console_segmented(ui, cw, 38.0, settings.scale, &scales, "scale_seg") {
+                    let scales = [(1u32, "Petite"), (2, "Normale"), (3, "Grande"), (4, "Très grande")];
+                    if let Some(s) = console_segmented(ui, cw, 38.0, settings.scale.clamp(1, 4), &scales, "scale_seg") {
                         settings.scale = s;
                     }
 
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Filtre de mise à l'échelle").size(15.0).strong().color(Color32::WHITE));
+                    ui.label(RichText::new("Lissage de l'image").size(15.0).strong().color(Color32::WHITE));
                     ui.add_space(6.0);
                     let filters = [
-                        (Filter::Sharp, "Net (Recommandé)"),
-                        (Filter::Smooth, "Doux"),
-                        (Filter::Pixels, "Pixels bruts"),
+                        (Filter::Sharp, "Net (Conseillé)"),
+                        (Filter::Smooth, "Adouci"),
+                        (Filter::Pixels, "Rétro pixelisé"),
                     ];
                     if let Some(f) = console_segmented(ui, cw, 38.0, settings.filter, &filters, "filter_seg") {
                         settings.filter = f;
                     }
-
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    console_toggle_row(
-                        ui,
-                        cw,
-                        "Échelle entière stricte",
-                        "Multiples entiers exacts avec bordures.",
-                        &mut settings.integer_scale,
-                    );
                 });
             }
 
             2 => {
-                // ONGLET 2 : GRAPHISMES & SON
-                ui.label(RichText::new("Graphismes & Audio").size(22.0).strong().color(Color32::WHITE));
+                // ONGLET 2 : QUALITÉ & SON
+                ui.label(RichText::new("Qualité Graphique & Son").size(22.0).strong().color(Color32::WHITE));
                 ui.label(
-                    RichText::new("Rendu 3D matériel, suppression des contours noirs HD et réglages audio.")
+                    RichText::new("Choisissez la finesse des graphismes 3D et le volume du jeu.")
                         .size(14.0)
                         .color(Color32::from_rgb(148, 156, 172)),
                 );
                 ui.add_space(14.0);
 
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Résolution interne 3D").size(15.5).strong().color(Color32::WHITE));
-                    ui.label(
-                        RichText::new("5x = QHD (2000×1200), 8x = 4K. S'applique au prochain démarrage ou redémarrage.")
-                            .size(12.5)
-                            .color(Color32::from_rgb(148, 156, 172)),
-                    );
+                    ui.label(RichText::new("Finesse de la 3D (prend effet au redémarrage)").size(15.5).strong().color(Color32::WHITE));
                     ui.add_space(8.0);
                     let res_opts = [
-                        (1u32, "1x"),
-                        (2, "2x"),
-                        (3, "3x"),
-                        (4, "4x"),
-                        (5, "5x"),
-                        (6, "6x"),
-                        (8, "8x"),
+                        (1u32, "3DS d'origine"),
+                        (3, "HD (720p)"),
+                        (4, "Full HD (1080p)"),
+                        (5, "Ultra HD (1440p)"),
+                        (8, "4K"),
                     ];
-                    if let Some(r) = console_segmented(ui, cw, 40.0, settings.resolution, &res_opts, "res_seg") {
+                    let current_preset = match settings.resolution {
+                        0..=2 => 1,
+                        3 => 3,
+                        4 => 4,
+                        5..=6 => 5,
+                        _ => 8,
+                    };
+                    if let Some(r) = console_segmented(ui, cw, 40.0, current_preset, &res_opts, "res_seg") {
                         settings.resolution = r;
                     }
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    console_toggle_row(
-                        ui,
-                        cw,
-                        "Fluidité 60 FPS (Interpolation GPU)",
-                        "Images intermédiaires à 60 FPS sans accélérer la vitesse du jeu.",
-                        &mut settings.frame_interpolation,
-                    );
 
                     if let Some(cheat_list) = cheats {
                         for (idx, (cname, enabled, notes, builtin)) in cheat_list.iter().enumerate() {
                             if !*builtin {
                                 continue;
                             }
-                            ui.add_space(8.0);
+                            ui.add_space(10.0);
                             ui.separator();
                             ui.add_space(8.0);
                             let mut current = *enabled;
                             let title_fr = if cname.contains("No Outlines") {
-                                "Supprimer les contours noirs (HD)"
+                                "Modèles 3D lisses HD (Sans traits noirs)"
                             } else if cname == "60 FPS" {
-                                "Mode Turbo 2x (Vitesse doublée)"
+                                "Mode Vitesse Rapide x2"
                             } else {
                                 cname.as_str()
                             };
                             let desc_fr = if cname.contains("No Outlines") {
-                                "Retire en direct les traits noirs autour des personnages et Pokémon."
+                                "Retire immédiatement le contour noir autour des personnages et Pokémon."
                             } else if cname == "60 FPS" {
-                                "Double la vitesse d'exécution globale du moteur."
+                                "Accélère les déplacements et les combats x2 (ou maintenez Tab en jeu)."
                             } else {
                                 notes.as_str()
                             };
@@ -1570,6 +1871,18 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                         }
                     }
 
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    console_toggle_row(
+                        ui,
+                        cw,
+                        "Fluidité caméra 60 FPS (Interpolation)",
+                        "Ajoute des images intermédiaires sur les mouvements lents de caméra.",
+                        &mut settings.frame_interpolation,
+                    );
+
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
@@ -1577,8 +1890,8 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     console_toggle_row(
                         ui,
                         cw,
-                        "Packs de textures personnalisés",
-                        "Charge les textures placées dans le dossier mods.",
+                        "Packs de textures HD personnalisés",
+                        "Charge automatiquement les textures placées dans le dossier Mods.",
                         &mut settings.texture_packs,
                     );
                 });
@@ -1588,7 +1901,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 console_card(ui, width, |ui, cw| {
                     let pct = (settings.volume * 100.0).round() as i32;
                     ui.label(
-                        RichText::new(format!("Volume principal  —  {pct}%"))
+                        RichText::new(format!("Volume du jeu  —  {pct}%"))
                             .size(15.5)
                             .strong()
                             .color(Color32::WHITE),
@@ -1600,7 +1913,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
-                    console_toggle_row(ui, cw, "Couper le son", "Désactive la sortie audio.", &mut settings.mute);
+                    console_toggle_row(ui, cw, "Couper le son", "Met le jeu en sourdine.", &mut settings.mute);
 
                     ui.add_space(8.0);
                     ui.separator();
@@ -1608,8 +1921,8 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     console_toggle_row(
                         ui,
                         cw,
-                        "Compteur d'images par seconde (FPS)",
-                        "Affiche les FPS en haut à gauche de l'écran.",
+                        "Afficher les FPS",
+                        "Affiche le nombre d'images par seconde en haut de l'écran.",
                         &mut settings.show_fps,
                     );
 
@@ -1633,15 +1946,15 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
             }
 
             3 => {
-                // ONGLET 3 : CONTRÔLES
-                ui.label(RichText::new("Contrôles").size(22.0).strong().color(Color32::WHITE));
+                // ONGLET 3 : TOUCHES & MANETTE
+                ui.label(RichText::new("Touches & Manette").size(22.0).strong().color(Color32::WHITE));
                 ui.label(
-                    RichText::new("Cliquez sur une ligne pour réassigner une touche clavier ou un bouton manette.")
+                    RichText::new("Les manettes Xbox, PlayStation et Switch fonctionnent directement sans réglage. Cliquez sur une touche pour la changer.")
                         .size(14.0)
                         .color(Color32::from_rgb(148, 156, 172)),
                 );
                 ui.add_space(10.0);
-                if console_secondary_button(ui, 220.0, 38.0, "Réinitialiser par défaut", true) {
+                if console_secondary_button(ui, 230.0, 38.0, "Remettre les touches de base", true) {
                     settings.keys = Keys::default();
                     settings.pad = PadButtons::default();
                     self.rebinding = None;
@@ -1655,7 +1968,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     for (i, (kname, key)) in settings.keys.all_mut().into_iter().enumerate() {
                         let waiting_this = self.rebinding == Some(i);
                         let badge = if waiting_this { "Appuyez…".to_owned() } else { key_name(*key) };
-                        if console_binding_row(ui, cw, kname, &badge, waiting_this) {
+                        if console_binding_row(ui, cw, friendly_control_name(kname), &badge, waiting_this) {
                             self.rebinding = Some(i);
                             self.rebinding_pad = None;
                         }
@@ -1670,7 +1983,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     for (i, (bname, button)) in settings.pad.all_mut().into_iter().enumerate() {
                         let waiting_this = self.rebinding_pad == Some(i);
                         let badge = if waiting_this { "Appuyez…" } else { button_name(*button) };
-                        if console_binding_row(ui, cw, bname, badge, waiting_this) {
+                        if console_binding_row(ui, cw, friendly_control_name(bname), badge, waiting_this) {
                             self.rebinding_pad = Some(i);
                             self.rebinding = None;
                         }
@@ -1679,10 +1992,10 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
             }
 
             _ => {
-                // ONGLET 4 : CODES, MODS & RÉSEAU
-                ui.label(RichText::new("Codes, Mods & Multijoueur").size(22.0).strong().color(Color32::WHITE));
+                // ONGLET 4 : MULTIJOUEUR & BONUS
+                ui.label(RichText::new("Multijoueur, Mods & Bonus").size(22.0).strong().color(Color32::WHITE));
                 ui.label(
-                    RichText::new("Salons sans-fil locaux, dossier mods, image caméra QR et codes Action Replay.")
+                    RichText::new("Jouez à plusieurs en réseau local, scannez des QR Codes de Bases Secrètes ou ajoutez des mods.")
                         .size(14.0)
                         .color(Color32::from_rgb(148, 156, 172)),
                 );
@@ -1691,10 +2004,10 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 let half = (width - 10.0) / 2.0;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    if console_secondary_button(ui, half, 42.0, "Salons Multijoueur local", true) {
+                    if console_secondary_button(ui, half, 42.0, "Salons Multijoueur en réseau", true) {
                         self.multiplayer_open = true;
                     }
-                    if console_secondary_button(ui, half, 42.0, "Image Caméra / QR Code", true) {
+                    if console_secondary_button(ui, half, 42.0, "Scanner une image / QR Code", true) {
                         actions.push(Action::ChooseCameraPicture);
                     }
                 });
@@ -1703,29 +2016,29 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     if let Some(pid) = program_id {
-                        if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier Mods", true) {
+                        if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier des Mods", true) {
                             actions.push(Action::Mods(pid));
                         }
-                    } else if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier Cheats", true) {
+                    } else if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier des Codes", true) {
                         actions.push(Action::CheatsFolder);
                     }
-                    if console_secondary_button(ui, half, 42.0, "Copier le diagnostic", true) {
-                        actions.push(Action::CopyReport);
+                    if console_secondary_button(ui, half, 42.0, "Retour à l'écran d'accueil", true) {
+                        actions.push(Action::Library);
                     }
                 });
 
                 ui.add_space(16.0);
 
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Codes Action Replay").size(16.5).strong().color(Color32::WHITE));
+                    ui.label(RichText::new("Codes de triche (Action Replay)").size(16.5).strong().color(Color32::WHITE));
                     ui.add_space(6.0);
                     let btn_half = (cw - 10.0) / 2.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
-                        if console_secondary_button(ui, btn_half, 36.0, "Recharger le fichier", true) {
+                        if console_secondary_button(ui, btn_half, 36.0, "Actualiser la liste", true) {
                             actions.push(Action::ReloadCheats);
                         }
-                        if console_secondary_button(ui, btn_half, 36.0, "Ouvrir le dossier cheats", true) {
+                        if console_secondary_button(ui, btn_half, 36.0, "Ouvrir le dossier des codes", true) {
                             actions.push(Action::CheatsFolder);
                         }
                     });
@@ -1735,7 +2048,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                         let user_cheats: Vec<_> = cheat_list.iter().enumerate().filter(|(_, c)| !c.3).collect();
                         if user_cheats.is_empty() {
                             ui.label(
-                                RichText::new("Aucun code personnalisé enregistré.")
+                                RichText::new("Aucun code personnalisé ajouté pour le moment.")
                                     .size(13.5)
                                     .color(Color32::from_rgb(148, 156, 172)),
                             );
@@ -1753,7 +2066,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     ui.add_space(10.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.cheat_name)
-                            .hint_text("Nom du code")
+                            .hint_text("Nom du code (ex: Super Bonbons)")
                             .margin(egui::Margin::symmetric(10, 8))
                             .desired_width(cw),
                     );
@@ -1767,7 +2080,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                             .font(egui::TextStyle::Monospace),
                     );
                     ui.add_space(8.0);
-                    if console_primary_button(ui, 190.0, 38.0, "Ajouter le code") && !self.cheat_code.trim().is_empty() {
+                    if console_primary_button(ui, 190.0, 38.0, "Ajouter ce code") && !self.cheat_code.trim().is_empty() {
                         actions.push(Action::AddCheat(
                             std::mem::take(&mut self.cheat_name),
                             std::mem::take(&mut self.cheat_code),
@@ -1779,6 +2092,32 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
     }"#;
 
 const WIDE_CONSOLE_WIDGET_HELPERS_RS: &str = r#"
+fn friendly_control_name(raw: &str) -> &str {
+    match raw {
+        "A" => "Bouton A (Valider)",
+        "B" => "Bouton B (Annuler / Courir)",
+        "X" => "Bouton X (Menu Pokémon)",
+        "Y" => "Bouton Y (Objets enregistrés)",
+        "L" => "Gâchette L",
+        "R" => "Gâchette R",
+        "Start" => "Start",
+        "Select" => "Select",
+        "D-pad up" => "Croix — Haut",
+        "D-pad down" => "Croix — Bas",
+        "D-pad left" => "Croix — Gauche",
+        "D-pad right" => "Croix — Droite",
+        "Circle pad up" => "Stick — Haut",
+        "Circle pad down" => "Stick — Bas",
+        "Circle pad left" => "Stick — Gauche",
+        "Circle pad right" => "Stick — Droite",
+        "C-stick up" => "Second stick — Haut",
+        "C-stick down" => "Second stick — Bas",
+        "C-stick left" => "Second stick — Gauche",
+        "C-stick right" => "Second stick — Droite",
+        other => other,
+    }
+}
+
 fn console_nav_button(ui: &mut egui::Ui, width: f32, label: &str, active: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 42.0), egui::Sense::click());
     if ui.is_rect_visible(rect) {
@@ -1831,7 +2170,7 @@ fn console_primary_button(ui: &mut egui::Ui, width: f32, height: f32, label: &st
             rect.center(),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(14.5),
+            egui::FontId::proportional(15.0),
             Color32::WHITE,
         );
     }
@@ -2093,7 +2432,6 @@ fn console_screen_layout_card(
         ui.painter().rect_filled(rect, egui::CornerRadius::same(10), bg);
         ui.painter().rect_stroke(rect, egui::CornerRadius::same(10), border, egui::StrokeKind::Inside);
 
-        // Icône géométrique dans les 68 premiers pixels à gauche de la carte horizontale
         let cx = rect.left() + 36.0;
         let cy = rect.center().y;
         let top_fill = if selected {

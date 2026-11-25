@@ -232,3 +232,127 @@ pub fn generate_app_icons(
 
     Ok(())
 }
+
+/// Génère une icône procédurale originale 100% légale (Orbe Saphir géométrique, zéro donnée Nintendo/Pokémon)
+/// pour les distributions publiques et GitHub Releases.
+fn render_procedural_orb_rgba(size: usize) -> Vec<u8> {
+    let mut dst = vec![0u8; size * size * 4];
+    let szf = size as f32;
+    let radius = szf * 0.22;
+    let center = szf * 0.5;
+    let orb_r = szf * 0.34;
+
+    for y in 0..size {
+        let yf = y as f32 + 0.5;
+        for x in 0..size {
+            let xf = x as f32 + 0.5;
+            let idx = (y * size + x) * 4;
+
+            // Fond sombre ardoise/nuit
+            let bg_t = (yf / szf).clamp(0.0, 1.0);
+            let mut r = 12.0 + 8.0 * bg_t;
+            let mut g = 18.0 + 14.0 * bg_t;
+            let mut b = 32.0 + 26.0 * bg_t;
+
+            // Orbe saphir central avec reflet spéculaire doux
+            let ox = xf - center;
+            let oy = yf - center;
+            let odist = (ox * ox + oy * oy).sqrt();
+            if odist <= orb_r + 1.5 {
+                let edge_aa = ((orb_r + 1.0 - odist) / 1.5).clamp(0.0, 1.0);
+                let nx = ox / orb_r;
+                let ny = oy / orb_r;
+                let nz = (1.0 - (nx * nx + ny * ny).min(1.0)).sqrt();
+
+                // Éclairage directionnel haut-gauche
+                let lx = -0.38f32;
+                let ly = -0.45f32;
+                let lz = 0.808f32;
+                let diff = (nx * lx + ny * ly + nz * lz).max(0.0);
+                let spec = diff.powf(18.0);
+                let rim = (1.0 - nz).powf(2.4);
+
+                let or_col = (18.0 + 48.0 * diff + 210.0 * spec + 45.0 * rim).clamp(0.0, 255.0);
+                let og_col = (74.0 + 115.0 * diff + 225.0 * spec + 95.0 * rim).clamp(0.0, 255.0);
+                let ob_col = (176.0 + 75.0 * diff + 255.0 * spec + 75.0 * rim).clamp(0.0, 255.0);
+
+                r = r * (1.0 - edge_aa) + or_col * edge_aa;
+                g = g * (1.0 - edge_aa) + og_col * edge_aa;
+                b = b * (1.0 - edge_aa) + ob_col * edge_aa;
+            }
+
+            // Masque squircle macOS/Windows propre
+            let dx = if xf < radius {
+                radius - xf
+            } else if xf > szf - radius {
+                xf - (szf - radius)
+            } else {
+                0.0
+            };
+            let dy = if yf < radius {
+                radius - yf
+            } else if yf > szf - radius {
+                yf - (szf - radius)
+            } else {
+                0.0
+            };
+            let cdist = (dx * dx + dy * dy).sqrt();
+            let alpha = if cdist <= radius - 1.0 {
+                255u8
+            } else if cdist >= radius + 0.5 {
+                0u8
+            } else {
+                (((radius + 0.5 - cdist) / 1.5) * 255.0).round().clamp(0.0, 255.0) as u8
+            };
+
+            dst[idx] = r.round() as u8;
+            dst[idx + 1] = g.round() as u8;
+            dst[idx + 2] = b.round() as u8;
+            dst[idx + 3] = alpha;
+        }
+    }
+    dst
+}
+
+pub fn generate_clean_orb_icons(
+    icns_out: Option<&Path>,
+    ico_out: Option<&Path>,
+    png_out: Option<&Path>,
+) -> Result<(), String> {
+    let rgba256 = render_procedural_orb_rgba(256);
+    let png256 = encode_png_rgba(256, 256, &rgba256);
+
+    if let Some(p) = png_out {
+        fs::write(p, &png256).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(p) = icns_out {
+        let rgba512 = render_procedural_orb_rgba(512);
+        let png512 = encode_png_rgba(512, 512, &rgba512);
+        let total_len = 8 + (8 + png256.len()) + (8 + png512.len());
+        let mut icns = Vec::with_capacity(total_len);
+        icns.extend_from_slice(b"icns");
+        icns.extend_from_slice(&(total_len as u32).to_be_bytes());
+        icns.extend_from_slice(b"ic08");
+        icns.extend_from_slice(&((8 + png256.len()) as u32).to_be_bytes());
+        icns.extend_from_slice(&png256);
+        icns.extend_from_slice(b"ic09");
+        icns.extend_from_slice(&((8 + png512.len()) as u32).to_be_bytes());
+        icns.extend_from_slice(&png512);
+        fs::write(p, icns).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(p) = ico_out {
+        let mut ico = Vec::with_capacity(22 + png256.len());
+        ico.extend_from_slice(&[0, 0, 1, 0, 1, 0]);
+        ico.extend_from_slice(&[0, 0, 0, 0]);
+        ico.extend_from_slice(&1u16.to_le_bytes());
+        ico.extend_from_slice(&32u16.to_le_bytes());
+        ico.extend_from_slice(&(png256.len() as u32).to_be_bytes());
+        ico.extend_from_slice(&22u32.to_le_bytes());
+        ico.extend_from_slice(&png256);
+        fs::write(p, ico).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
