@@ -8,6 +8,12 @@
 use std::fs;
 use std::path::Path;
 
+fn read_lf(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path)
+        .map(|s| s.replace("\r\n", "\n"))
+        .map_err(|e| e.to_string())
+}
+
 pub fn apply_sdk_enhancements(recomp_repo: &Path, zakuro_repo: &Path) -> Result<(), String> {
     patch_recomp_incremental(recomp_repo)?;
     patch_zakuro_oras_enhancements(zakuro_repo)?;
@@ -22,7 +28,7 @@ fn patch_recomp_incremental(recomp_repo: &Path) -> Result<(), String> {
     if !compile_rs.exists() {
         return Ok(());
     }
-    let src = fs::read_to_string(&compile_rs).map_err(|e| e.to_string())?;
+    let src = read_lf(&compile_rs).map_err(|e| e.to_string())?;
     if src.contains("BLUEORB_INCREMENTAL_OBJ") {
         return Ok(());
     }
@@ -63,7 +69,7 @@ fn patch_zakuro_oras_enhancements(zakuro_repo: &Path) -> Result<(), String> {
     if !enh_path.exists() {
         return Ok(());
     }
-    let src = fs::read_to_string(&enh_path).map_err(|e| e.to_string())?;
+    let src = read_lf(&enh_path).map_err(|e| e.to_string())?;
     if src.contains("No Outlines (HD)") {
         return Ok(());
     }
@@ -93,7 +99,7 @@ fn patch_zakuro_gpu_ultrawide_upscaler_antiflicker_and_dual_vulkan(zakuro_repo: 
     // 3a. `zakuro-gpu/src/interpolation.rs` : suppression du clignotement 60 Hz sur les textures/yeux/transitions
     let interp_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("interpolation.rs");
     if interp_rs.exists() {
-        let mut src = fs::read_to_string(&interp_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&interp_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_ANTIFLICKER_60HZ") {
             // Détecter aussi les pas d'atlas 1/3, 1/6, 1/12, 1/24 (yeux, bouches et sprites Pokémon 3DS) en plus des 1/64 !
             src = src.replace(
@@ -111,7 +117,7 @@ fn patch_zakuro_gpu_ultrawide_upscaler_antiflicker_and_dual_vulkan(zakuro_repo: 
     // 3b. `zakuro-gpu/src/lib.rs`
     let gpu_lib_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("lib.rs");
     if gpu_lib_rs.exists() {
-        let src = fs::read_to_string(&gpu_lib_rs).map_err(|e| e.to_string())?;
+        let src = read_lf(&gpu_lib_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_TOP_ASPECT_SCALE") {
             let addition = r#"
 static BLUEORB_TOP_ASPECT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
@@ -133,7 +139,7 @@ pub fn top_aspect_scale() -> f32 {
     // 3c. `zakuro-gpu/src/raster.rs`
     let raster_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("raster.rs");
     if raster_rs.exists() {
-        let src = fs::read_to_string(&raster_rs).map_err(|e| e.to_string())?;
+        let src = read_lf(&raster_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_ULTRAWIDE_PLACE") {
             let needle = "fn place(registers: &[u32], shaded: &[Vertex], order: Option<&[usize]>, viewport: (f32, f32, f32, f32)) -> Placement {";
             let replacement = r#"fn place(registers: &[u32], shaded_in: &[Vertex], order: Option<&[usize]>, viewport: (f32, f32, f32, f32)) -> Placement {
@@ -168,7 +174,7 @@ pub fn top_aspect_scale() -> f32 {
     // 3d. `zakuro-gpu/src/shader/glsl.rs`
     let glsl_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("shader").join("glsl.rs");
     if glsl_rs.exists() {
-        let src = fs::read_to_string(&glsl_rs).map_err(|e| e.to_string())?;
+        let src = read_lf(&glsl_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_GLSL_ULTRAWIDE") {
             let needle = "const EPILOGUE: &str = r#\"    if (position.w > 1e-5) {";
             let replacement = r#"const EPILOGUE: &str = r#"    // BLUEORB_GLSL_ULTRAWIDE
@@ -188,7 +194,7 @@ pub fn top_aspect_scale() -> f32 {
     // 3e. `zakuro-gpu/src/raster/hardware.rs`
     let hw_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("raster").join("hardware.rs");
     if hw_rs.exists() {
-        let mut src = fs::read_to_string(&hw_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&hw_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_HD_UPSCALE") {
             src = src.replace(
                 "    max_bias: f32,\n",
@@ -259,7 +265,7 @@ pub fn top_aspect_scale() -> f32 {
     // 3f. `zakuro-gpu/src/backend/vulkan.rs`
     let vk_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("backend").join("vulkan.rs");
     if vk_rs.exists() {
-        let mut src = fs::read_to_string(&vk_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&vk_rs).map_err(|e| e.to_string())?;
         if !src.contains("pub fn new_secondary(") {
             src = src.replace(
                 "    stale: bool,\n}",
@@ -451,7 +457,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     // 4a. `main.rs` : pas de fenêtre console noire sur Windows !
     let main_rs = zakuro_src.join("main.rs");
     if main_rs.exists() {
-        let src = fs::read_to_string(&main_rs).map_err(|e| e.to_string())?;
+        let src = read_lf(&main_rs).map_err(|e| e.to_string())?;
         if !src.contains("windows_subsystem") {
             let patched = format!(
                 "#![cfg_attr(target_os = \"windows\", windows_subsystem = \"windows\")]\n{src}"
@@ -463,7 +469,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     // 4b. `recompile.rs` : compiler à pleine vitesse sur les cœurs Performance (4x-5x plus rapide au 1er lancement !)
     let recompile_rs = zakuro_src.join("recompile.rs");
     if recompile_rs.exists() {
-        let src = fs::read_to_string(&recompile_rs).map_err(|e| e.to_string())?;
+        let src = read_lf(&recompile_rs).map_err(|e| e.to_string())?;
         if src.contains("background: true") {
             fs::write(&recompile_rs, src.replace("background: true", "background: false"))
                 .map_err(|e| e.to_string())?;
@@ -473,7 +479,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     // 4c. `gui.rs` : Thème sombre sobre & lisible
     let gui_rs = zakuro_src.join("gui.rs");
     if gui_rs.exists() {
-        let mut src = fs::read_to_string(&gui_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&gui_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_CONSOLE_THEME") {
             src = src.replace(
                 "        ctx.set_fonts(fonts(system_fonts()));",
@@ -487,7 +493,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     // 4d. `settings.rs` : `blueorb_rom`, valeurs par défaut optimales (Français, 5x 1440p, No Outlines HD, 0 clignotement)
     let settings_rs = zakuro_src.join("settings.rs");
     if settings_rs.exists() {
-        let mut src = fs::read_to_string(&settings_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&settings_rs).map_err(|e| e.to_string())?;
         if !src.contains("ZAKURO_SETTINGS_PATH") {
             src = src.replace(
                 "fn path() -> Option<PathBuf> {",
@@ -554,7 +560,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     // 4e. `menus.rs` : Assistant d'accueil 1er lancement (`library`) + Menu Pause accessible (`game`)
     let menus_rs = zakuro_src.join("menus.rs");
     if menus_rs.exists() {
-        let mut src = fs::read_to_string(&menus_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&menus_rs).map_err(|e| e.to_string())?;
         if !src.contains("BLUEORB_WIDE_CONSOLE_MENU") {
             src = src.replace(
                 "    CheatsFolder,\n}",
@@ -716,7 +722,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     // 4f. `present.rs`
     let present_rs = zakuro_src.join("present.rs");
     if present_rs.exists() {
-        let mut src = fs::read_to_string(&present_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&present_rs).map_err(|e| e.to_string())?;
         if !src.contains("pub fn create_secondary(") {
             let sec_fn = r#"    pub fn create_secondary(
         event_loop: &ActiveEventLoop,
@@ -745,7 +751,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     // 4g. `lib.rs` : auto-boot si déjà recompilé, recompilation auto dès sélection/glisser-déposer de la ROM, puis lancement auto !
     let lib_rs = zakuro_src.join("lib.rs");
     if lib_rs.exists() {
-        let mut src = fs::read_to_string(&lib_rs).map_err(|e| e.to_string())?;
+        let mut src = read_lf(&lib_rs).map_err(|e| e.to_string())?;
         if !src.contains("bottom_window") {
             src = src.replace(
                 "        layout: settings.layout,",

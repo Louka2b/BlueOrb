@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use eframe::egui::{self, Align, Color32, CursorIcon, FontFamily, FontId, Layout, Margin, RichText, Rounding, Stroke, TextStyle, Vec2};
+use eframe::egui::{self, Align, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Layout, Margin, RichText, Stroke, StrokeKind, TextStyle, Vec2};
 
 const EMBEDDED_BLUEORB_TOML: &str = include_str!("../../../blueorb.toml");
 const EMBEDDED_OVERRIDES_C: &str = include_str!("../../../overrides/blueorb_overrides.c");
@@ -256,9 +256,10 @@ impl InstallerApp {
 }
 
 impl eframe::App for InstallerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = root_ui.ctx().clone();
         self.hovering_drop = ctx.input(|i| !i.raw.hovered_files.is_empty());
-        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         if let Some(first) = dropped.into_iter().next() {
             self.set_rom(first);
         }
@@ -271,11 +272,11 @@ impl eframe::App for InstallerApp {
 
         egui::CentralPanel::default()
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(Color32::from_rgb(18, 20, 26))
-                    .inner_margin(Margin::symmetric(32.0, 26.0)),
+                    .inner_margin(Margin::symmetric(32, 26)),
             )
-            .show(ctx, |ui| {
+            .show(root_ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let full_w = ui.available_width();
 
@@ -305,15 +306,15 @@ impl eframe::App for InstallerApp {
                         Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 20))
                     };
 
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(if self.hovering_drop {
                             Color32::from_rgb(24, 32, 48)
                         } else {
                             Color32::from_rgb(25, 28, 36)
                         })
                         .stroke(border)
-                        .rounding(Rounding::same(12.0))
-                        .inner_margin(Margin::same(20.0))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(Margin::same(20))
                         .show(ui, |ui| {
                             let cw = (full_w - 42.0).max(220.0);
                             ui.set_width(cw);
@@ -382,11 +383,11 @@ impl eframe::App for InstallerApp {
                     ui.add_space(16.0);
 
                     // Options initiales
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(Color32::from_rgb(25, 28, 36))
                         .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 18)))
-                        .rounding(Rounding::same(12.0))
-                        .inner_margin(Margin::same(20.0))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(Margin::same(20))
                         .show(ui, |ui| {
                             let cw = (full_w - 42.0).max(220.0);
                             ui.set_width(cw);
@@ -468,11 +469,11 @@ impl eframe::App for InstallerApp {
                             }
                             if let BuildPhase::Failed(err) = &phase {
                                 ui.add_space(10.0);
-                                egui::Frame::none()
+                                egui::Frame::NONE
                                     .fill(Color32::from_rgb(52, 22, 26))
                                     .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(248, 113, 113, 85)))
-                                    .rounding(Rounding::same(10.0))
-                                    .inner_margin(Margin::same(14.0))
+                                    .corner_radius(CornerRadius::same(10))
+                                    .inner_margin(Margin::same(14))
                                     .show(ui, |ui| {
                                         ui.set_width((full_w - 30.0).max(180.0));
                                         ui.label(RichText::new(err).size(13.5).color(Color32::from_rgb(254, 202, 202)));
@@ -480,11 +481,11 @@ impl eframe::App for InstallerApp {
                             }
                         }
                         BuildPhase::Running => {
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .fill(Color32::from_rgb(25, 28, 36))
                                 .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 22)))
-                                .rounding(Rounding::same(12.0))
-                                .inner_margin(Margin::same(18.0))
+                                .corner_radius(CornerRadius::same(12))
+                                .inner_margin(Margin::same(18))
                                 .show(ui, |ui| {
                                     ui.set_width((full_w - 38.0).max(200.0));
                                     ui.horizontal(|ui| {
@@ -496,11 +497,11 @@ impl eframe::App for InstallerApp {
                                 });
                         }
                         BuildPhase::Success(bundle_path) => {
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .fill(Color32::from_rgb(22, 36, 30))
                                 .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(74, 222, 128, 90)))
-                                .rounding(Rounding::same(12.0))
-                                .inner_margin(Margin::same(18.0))
+                                .corner_radius(CornerRadius::same(12))
+                                .inner_margin(Margin::same(18))
                                 .show(ui, |ui| {
                                     let cw = (full_w - 38.0).max(200.0);
                                     ui.set_width(cw);
@@ -552,11 +553,11 @@ impl eframe::App for InstallerApp {
                         }
                         if self.show_logs {
                             ui.add_space(6.0);
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .fill(Color32::from_rgb(12, 14, 18))
                                 .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 16)))
-                                .rounding(Rounding::same(8.0))
-                                .inner_margin(Margin::same(12.0))
+                                .corner_radius(CornerRadius::same(8))
+                                .inner_margin(Margin::same(12))
                                 .show(ui, |ui| {
                                     ui.set_width((full_w - 26.0).max(180.0));
                                     egui::ScrollArea::vertical()
@@ -591,11 +592,12 @@ fn segmented_row<T: Copy + PartialEq>(
     let mut picked = None;
     let (outer_rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
     if ui.is_rect_visible(outer_rect) {
-        ui.painter().rect_filled(outer_rect, Rounding::same(9.0), Color32::from_rgb(14, 16, 21));
+        ui.painter().rect_filled(outer_rect, CornerRadius::same(9), Color32::from_rgb(14, 16, 21));
         ui.painter().rect_stroke(
             outer_rect,
-            Rounding::same(9.0),
+            CornerRadius::same(9),
             Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
+            StrokeKind::Inside,
         );
     }
     let inner = outer_rect.shrink(4.0);
@@ -609,9 +611,9 @@ fn segmented_row<T: Copy + PartialEq>(
         let selected = val == current;
         if ui.is_rect_visible(item_rect) {
             if selected {
-                ui.painter().rect_filled(item_rect, Rounding::same(6.0), Color32::from_rgb(37, 99, 235));
+                ui.painter().rect_filled(item_rect, CornerRadius::same(6), Color32::from_rgb(37, 99, 235));
             } else if resp.hovered() {
-                ui.painter().rect_filled(item_rect, Rounding::same(6.0), Color32::from_rgb(28, 32, 42));
+                ui.painter().rect_filled(item_rect, CornerRadius::same(6), Color32::from_rgb(28, 32, 42));
             }
             let col = if selected || resp.hovered() {
                 Color32::WHITE
@@ -650,7 +652,7 @@ fn toggle_row(ui: &mut egui::Ui, width: f32, title: &str, subtitle: &str, value:
         } else {
             Color32::from_rgb(42, 47, 58)
         };
-        ui.painter().rect_filled(switch_rect, Rounding::same(13.0), track);
+        ui.painter().rect_filled(switch_rect, CornerRadius::same(13), track);
         let knob_x = if *value { switch_rect.right() - 13.0 } else { switch_rect.left() + 13.0 };
         ui.painter().circle_filled(egui::pos2(knob_x, switch_rect.center().y), 9.5, Color32::WHITE);
 
@@ -691,7 +693,7 @@ fn primary_cta(ui: &mut egui::Ui, width: f32, height: f32, label: &str, enabled:
         } else {
             Color32::from_rgb(122, 130, 146)
         };
-        ui.painter().rect_filled(rect, Rounding::same(10.0), fill);
+        ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -704,50 +706,51 @@ fn primary_cta(ui: &mut egui::Ui, width: f32, height: f32, label: &str, enabled:
 }
 
 fn apply_clean_dark_theme(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    style.text_styles.insert(TextStyle::Small, FontId::new(12.5, FontFamily::Proportional));
-    style.text_styles.insert(TextStyle::Body, FontId::new(14.5, FontFamily::Proportional));
-    style.text_styles.insert(TextStyle::Button, FontId::new(14.5, FontFamily::Proportional));
-    style.text_styles.insert(TextStyle::Heading, FontId::new(20.0, FontFamily::Proportional));
-    style.text_styles.insert(TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace));
-    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-    style.spacing.button_padding = egui::vec2(14.0, 8.0);
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.global_style_mut(|style| {
+        style.text_styles.insert(TextStyle::Small, FontId::new(12.5, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Body, FontId::new(14.5, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Button, FontId::new(14.5, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Heading, FontId::new(20.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace));
+        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        style.spacing.button_padding = egui::vec2(14.0, 8.0);
 
-    let mut v = egui::Visuals::dark();
-    v.window_fill = Color32::from_rgb(20, 22, 28);
-    v.panel_fill = Color32::from_rgb(18, 20, 26);
-    v.faint_bg_color = Color32::from_rgb(26, 29, 36);
-    v.extreme_bg_color = Color32::from_rgb(13, 15, 19);
-    v.window_rounding = Rounding::same(12.0);
-    v.menu_rounding = Rounding::same(8.0);
-    v.slider_trailing_fill = true;
-    v.interact_cursor = Some(CursorIcon::PointingHand);
-    v.selection.bg_fill = Color32::from_rgb(37, 99, 235);
+        let mut v = egui::Visuals::dark();
+        v.window_fill = Color32::from_rgb(20, 22, 28);
+        v.panel_fill = Color32::from_rgb(18, 20, 26);
+        v.faint_bg_color = Color32::from_rgb(26, 29, 36);
+        v.extreme_bg_color = Color32::from_rgb(13, 15, 19);
+        v.window_corner_radius = CornerRadius::same(12);
+        v.menu_corner_radius = CornerRadius::same(8);
+        v.slider_trailing_fill = true;
+        v.interact_cursor = Some(CursorIcon::PointingHand);
+        v.selection.bg_fill = Color32::from_rgb(37, 99, 235);
 
-    v.widgets.noninteractive.bg_fill = Color32::from_rgb(26, 29, 36);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(235, 238, 244));
-    v.widgets.noninteractive.rounding = Rounding::same(8.0);
+        v.widgets.noninteractive.bg_fill = Color32::from_rgb(26, 29, 36);
+        v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(235, 238, 244));
+        v.widgets.noninteractive.corner_radius = CornerRadius::same(8);
 
-    v.widgets.inactive.bg_fill = Color32::from_rgb(34, 38, 48);
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(34, 38, 48);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 16));
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(235, 238, 244));
-    v.widgets.inactive.rounding = Rounding::same(8.0);
+        v.widgets.inactive.bg_fill = Color32::from_rgb(34, 38, 48);
+        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(34, 38, 48);
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 16));
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(235, 238, 244));
+        v.widgets.inactive.corner_radius = CornerRadius::same(8);
 
-    v.widgets.hovered.bg_fill = Color32::from_rgb(46, 52, 66);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(46, 52, 66);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
-    v.widgets.hovered.fg_stroke = Stroke::new(1.5_f32, Color32::WHITE);
-    v.widgets.hovered.rounding = Rounding::same(8.0);
+        v.widgets.hovered.bg_fill = Color32::from_rgb(46, 52, 66);
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(46, 52, 66);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
+        v.widgets.hovered.fg_stroke = Stroke::new(1.5_f32, Color32::WHITE);
+        v.widgets.hovered.corner_radius = CornerRadius::same(8);
 
-    v.widgets.active.bg_fill = Color32::from_rgb(37, 99, 235);
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(37, 99, 235);
-    v.widgets.active.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250));
-    v.widgets.active.fg_stroke = Stroke::new(1.5_f32, Color32::WHITE);
-    v.widgets.active.rounding = Rounding::same(8.0);
+        v.widgets.active.bg_fill = Color32::from_rgb(37, 99, 235);
+        v.widgets.active.weak_bg_fill = Color32::from_rgb(37, 99, 235);
+        v.widgets.active.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(96, 165, 250));
+        v.widgets.active.fg_stroke = Stroke::new(1.5_f32, Color32::WHITE);
+        v.widgets.active.corner_radius = CornerRadius::same(8);
 
-    style.visuals = v;
-    ctx.set_style(style);
+        style.visuals = v;
+    });
 }
 
 fn inspect_3ds_rom(path: &Path) -> RomSummary {

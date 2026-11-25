@@ -367,10 +367,13 @@ fn ensure_git_repo(url: &str, dest: &Path, name: &str) -> Result<(), String> {
     }
     run_checked(
         Command::new("git")
-            .args(["clone", "--depth", "1", url])
+            .args(["-c", "core.autocrlf=false", "clone", "--depth", "1", url])
             .arg(dest),
         &format!("git clone {}", name),
-    )
+    )?;
+    // Éviter que rustup exige des composants optionnels (clippy/rustfmt) sur les environnements CI minimaux
+    let _ = fs::remove_file(dest.join("rust-toolchain.toml"));
+    Ok(())
 }
 
 fn ensure_moltenvk_macos(sdk_dir: &Path) -> Result<PathBuf, String> {

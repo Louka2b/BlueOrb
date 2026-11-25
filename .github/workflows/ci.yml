@@ -83,12 +83,35 @@ jobs:
           cargo build --release --manifest-path tools/launcher/Cargo.toml
           cargo build --release --manifest-path tools/installer/Cargo.toml
 
+      - name: Verify ARM Toolchain (Doctor)
+        shell: pwsh
+        run: |
+          if ($IsWindows) {
+            & ".\tools\blueorb\target\release\blueorb.exe" doctor
+          } else {
+            & "./tools/blueorb/target/release/blueorb" doctor
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build 100% Legal Zero-ROM Standalone BlueOrb GUI App
         shell: pwsh
         run: |
-          ./blueorb.ps1 doctor
-          ./blueorb.ps1 release
-          ./blueorb.ps1 installer --no-launch
+          if ($IsWindows) {
+            & ".\tools\blueorb\target\release\blueorb.exe" release
+          } else {
+            & "./tools/blueorb/target/release/blueorb" release
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Cross-Platform GUI Installer Bundle
+        shell: pwsh
+        run: |
+          if ($IsWindows) {
+            & ".\tools\blueorb\target\release\blueorb.exe" installer --no-launch
+          } else {
+            & "./tools/blueorb/target/release/blueorb" installer --no-launch
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Archive & Smoke-Test Binary (macOS ARM64)
         if: runner.os == 'macOS'
@@ -109,9 +132,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          if (-not (Test-Path ".\dist\BlueOrb\BlueOrb.exe")) {
+            Write-Error "dist\BlueOrb\BlueOrb.exe introuvable !"
+            exit 1
+          }
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          & "dist/BlueOrb/BlueOrb.exe" --test-pattern --headless 1 --mute
-          Compress-Archive -Path "dist/BlueOrb/*" -DestinationPath "release-assets/${{ matrix.archive }}" -Force
+          & ".\dist\BlueOrb\BlueOrb.exe" --test-pattern --headless 1 --mute
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path ".\dist\BlueOrb\*" -DestinationPath "release-assets\${{ matrix.archive }}" -Force
 
       - name: Upload Legal Standalone App Artifact
         uses: actions/upload-artifact@v4
