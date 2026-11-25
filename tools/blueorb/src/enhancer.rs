@@ -1,5 +1,5 @@
 // Patchs d'améliorations Remaster HD, Ultra-Wide (16:9 / 21:9 / 32:9), Double Fenêtre détachable (Haut + Bas)
-// et Thème / Menu "BlueOrb Saphir Abyssal" appliqués automatiquement aux sources `build/recomp_sdk/zakuro`
+// et Interface Console Large (sans fioritures) appliqués automatiquement aux sources `build/recomp_sdk/zakuro`
 // et `build/recomp_sdk/3dsrecomp` sur Linux (x86_64), macOS (ARM64 / Intel) et Windows (x86_64).
 
 use std::fs;
@@ -9,7 +9,7 @@ pub fn apply_sdk_enhancements(recomp_repo: &Path, zakuro_repo: &Path) -> Result<
     patch_recomp_incremental(recomp_repo)?;
     patch_zakuro_oras_enhancements(zakuro_repo)?;
     patch_zakuro_gpu_ultrawide_upscaler_and_dual_vulkan(zakuro_repo)?;
-    patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo)?;
+    patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo)?;
     Ok(())
 }
 
@@ -86,7 +86,6 @@ D2000000 00000000\n\
 ///    - Upscaler de textures 4x Smooth-xBR/EPX + Mipmaps trilinéaires + Anisotropie 16x
 ///    - Constructeur `VulkanPresenter::new_secondary` partageant le même `SharedDevice` Vulkan/Metal (zéro copie) pour la 2e fenêtre !
 fn patch_zakuro_gpu_ultrawide_upscaler_and_dual_vulkan(zakuro_repo: &Path) -> Result<(), String> {
-    // 3a. `zakuro-gpu/src/lib.rs` : variable atomique globale pour le facteur Hor+ Ultra-Wide de l'écran supérieur
     let gpu_lib_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("lib.rs");
     if gpu_lib_rs.exists() {
         let src = fs::read_to_string(&gpu_lib_rs).map_err(|e| e.to_string())?;
@@ -109,7 +108,6 @@ pub fn top_aspect_scale() -> f32 {
         }
     }
 
-    // 3b. `zakuro-gpu/src/raster.rs` : expansion Hor+ Ultra-Wide dans `fn place` (couvre CPU/Cranelift + 60 FPS Matrix Interpolation)
     let raster_rs = zakuro_repo.join("crates").join("zakuro-gpu").join("src").join("raster.rs");
     if raster_rs.exists() {
         let src = fs::read_to_string(&raster_rs).map_err(|e| e.to_string())?;
@@ -144,7 +142,6 @@ pub fn top_aspect_scale() -> f32 {
         }
     }
 
-    // 3c. `zakuro-gpu/src/shader/glsl.rs` : expansion Hor+ Ultra-Wide pour les GPU dédiés (Windows/Linux NVIDIA/AMD)
     let glsl_rs = zakuro_repo
         .join("crates")
         .join("zakuro-gpu")
@@ -169,7 +166,6 @@ pub fn top_aspect_scale() -> f32 {
         }
     }
 
-    // 3d. `zakuro-gpu/src/raster/hardware.rs` : Upscaler 4x Smooth-xBR + Anisotropie 16x + passage de `aspect_scale` dans `pad[0]`
     let hw_rs = zakuro_repo
         .join("crates")
         .join("zakuro-gpu")
@@ -245,7 +241,6 @@ pub fn top_aspect_scale() -> f32 {
         fs::write(&hw_rs, src).map_err(|e| e.to_string())?;
     }
 
-    // 3e. `zakuro-gpu/src/backend/vulkan.rs` : ajout de `VulkanPresenter::new_secondary` (partage `Arc<SharedDevice>` + PresentMode non-bloquant)
     let vk_rs = zakuro_repo
         .join("crates")
         .join("zakuro-gpu")
@@ -438,31 +433,25 @@ pub fn top_aspect_scale() -> f32 {
     Ok(())
 }
 
-/// 4. Patchs du frontend `zakuro` (`gui.rs`, `menus.rs`, `settings.rs`, `present.rs`, `lib.rs`) :
-///    - Thème "BlueOrb Saphir Abyssal" moderne (glassmorphism bleu océan/saphir, coins arrondis, ombres douces, accents cyan)
-///    - Menu Pause (`Échap`) entièrement repensé avec barre d'actions rapides 1-clic pour :
-///        * Détacher / Regrouper les 2 écrans (`F7`)
-///        * Choisir la disposition 1 fenêtre (`Superposé (Base)`, `Grand Haut`, `Côte à côte`)
-///        * Activer le vrai rendu 3D Ultra-Wide (`5:3 Base`, `16:9`, `21:9 UW`, `32:9` — `F6`)
-///    - Par défaut : disposition de base `Screens::Stacked` + format `TopShape::Console` (`5:3`)
-fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Path) -> Result<(), String> {
+/// 4. Interface Console Large (façon SteamOS / Zelda64Recomp : 2 colonnes spacieuses, zéro émoji, schémas d'écrans vectoriels)
+fn patch_zakuro_frontend_console_ui_and_dual_window(zakuro_repo: &Path) -> Result<(), String> {
     let zakuro_src = zakuro_repo.join("crates").join("zakuro").join("src");
 
-    // 4a. `gui.rs` : Thème visuel "BlueOrb Saphir Abyssal"
+    // 4a. `gui.rs` : Thème sombre neutre sobre & lisible
     let gui_rs = zakuro_src.join("gui.rs");
     if gui_rs.exists() {
         let mut src = fs::read_to_string(&gui_rs).map_err(|e| e.to_string())?;
-        if !src.contains("BLUEORB_SAPPHIRE_THEME") {
+        if !src.contains("BLUEORB_CONSOLE_THEME") {
             src = src.replace(
                 "        ctx.set_fonts(fonts(system_fonts()));",
-                "        ctx.set_fonts(fonts(system_fonts()));\n        apply_blueorb_sapphire_theme(&ctx);",
+                "        ctx.set_fonts(fonts(system_fonts()));\n        apply_blueorb_console_theme(&ctx);",
             );
-            src.push_str(SAPPHIRE_THEME_FN_RS);
+            src.push_str(CONSOLE_THEME_FN_RS);
             fs::write(&gui_rs, src).map_err(|e| e.to_string())?;
         }
     }
 
-    // 4b. `settings.rs` : `ZAKURO_SETTINGS_PATH`, `Screens::SeparateWindows` et `TopShape::Wide32x9`
+    // 4b. `settings.rs`
     let settings_rs = zakuro_src.join("settings.rs");
     if settings_rs.exists() {
         let mut src = fs::read_to_string(&settings_rs).map_err(|e| e.to_string())?;
@@ -483,7 +472,7 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
             );
             src = src.replace(
                 "Screens::LargeTop => \"Big top screen, small bottom one\",",
-                "Screens::LargeTop => \"Big top screen, small bottom one\",\n            Screens::SeparateWindows => \"Two separate windows (Top + Bottom)\",",
+                "Screens::LargeTop => \"Big top screen, small bottom one\",\n            Screens::SeparateWindows => \"Deux fenêtres séparées\",",
             );
             src = src.replace(
                 "Screens::LargeTop => ScreenLayout::LargeTop,",
@@ -501,7 +490,7 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
             );
             src = src.replace(
                 "TopShape::Wide21x9 => \"21:9\",",
-                "TopShape::Wide21x9 => \"21:9 Ultra-Wide\",\n            TopShape::Wide32x9 => \"32:9 Super Ultra-Wide\",",
+                "TopShape::Wide21x9 => \"21:9 Ultra-Wide\",\n            TopShape::Wide32x9 => \"32:9 Super Large\",",
             );
             src = src.replace(
                 "TopShape::Wide21x9 => 560.0,",
@@ -511,14 +500,18 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
         fs::write(&settings_rs, src).map_err(|e| e.to_string())?;
     }
 
-    // 4c. `menus.rs` : Nouveau menu Pause `Échap` élégant + contrôles directs Détacher Écrans & Ultra-Wide
+    // 4c. `menus.rs` : Grand Menu Console unifié à onglets latéraux (Partie / Écrans / Graphismes / Contrôles / Avancé)
     let menus_rs = zakuro_src.join("menus.rs");
     if menus_rs.exists() {
         let mut src = fs::read_to_string(&menus_rs).map_err(|e| e.to_string())?;
-        if !src.contains("BLUEORB_SAPPHIRE_GAME_MENU") {
+        if !src.contains("BLUEORB_WIDE_CONSOLE_MENU") {
             src = src.replace(
                 "    CheatsFolder,\n}",
                 "    CheatsFolder,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
+            );
+            src = src.replace(
+                "    pub menu_open: bool,",
+                "    pub menu_open: bool,\n    pub tab: u8,",
             );
 
             let old_game_fn = r#"    /// what goes over a running game, the menu when it's open and the frame rate when asked for
@@ -652,12 +645,13 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
             if !src.contains(old_game_fn) {
                 return Err("Impossible de localiser `Menus::game` dans `crates/zakuro/src/menus.rs`".into());
             }
-            src = src.replace(old_game_fn, NEW_SAPPHIRE_GAME_MENU_RS);
+            src = src.replace(old_game_fn, WIDE_CONSOLE_GAME_MENU_RS);
+            src.push_str(WIDE_CONSOLE_WIDGET_HELPERS_RS);
             fs::write(&menus_rs, src).map_err(|e| e.to_string())?;
         }
     }
 
-    // 4d. `present.rs` : ajout de `Backend::create_secondary`
+    // 4d. `present.rs`
     let present_rs = zakuro_src.join("present.rs");
     if present_rs.exists() {
         let mut src = fs::read_to_string(&present_rs).map_err(|e| e.to_string())?;
@@ -686,7 +680,7 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
         }
     }
 
-    // 4e. `lib.rs` : gestion de la 2e fenêtre détachable (`last_combined_layout` = `Stacked` par défaut), actions du nouveau menu, et raccourcis `F6` / `F7`
+    // 4e. `lib.rs`
     let lib_rs = zakuro_src.join("lib.rs");
     if lib_rs.exists() {
         let mut src = fs::read_to_string(&lib_rs).map_err(|e| e.to_string())?;
@@ -708,7 +702,6 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
                 "    layout: Screens,\n    last_combined_layout: Screens,",
             );
 
-            // Mémoriser `last_combined_layout` dans `set_layout` + ajouter `toggle_dual_windows` et `set_top_shape`
             let set_layout_needle = "    fn set_layout(&mut self, layout: Screens) {";
             let set_layout_rep = r#"    fn toggle_dual_windows(&mut self) {
         let target = if self.active.layout == Screens::SeparateWindows {
@@ -720,9 +713,9 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
         self.set_layout(target);
         self.menus.toast = Some((
             if target == Screens::SeparateWindows {
-                "Écrans détachés en 2 fenêtres (F7)".to_owned()
+                "Écrans séparés sur deux fenêtres".to_owned()
             } else {
-                format!("Écrans regroupés : {}", target.name())
+                "Écrans regroupés dans une fenêtre".to_owned()
             },
             Instant::now(),
         ));
@@ -737,7 +730,7 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
         self.settings.save();
         self.active = self.settings.for_game(self.program_id());
         self.apply_layout();
-        self.menus.toast = Some((format!("Format 3D : {}", shape.name()), Instant::now()));
+        self.menus.toast = Some((format!("Format : {}", shape.name()), Instant::now()));
     }
 
     fn set_layout(&mut self, layout: Screens) {
@@ -746,13 +739,11 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
         }"#;
             src = src.replace(set_layout_needle, set_layout_rep);
 
-            // Événements de la 2e fenêtre dans `window_event`
             let win_ev_needle = "    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {";
             let win_ev_rep = r#"    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.bottom_window.as_ref().is_some_and(|w| w.id() == id) {
             match event {
                 WindowEvent::CloseRequested => {
-                    // Fermer la fenêtre tactile rattache les 2 écrans dans la disposition précédente (Stacked par défaut) !
                     self.bottom_mouse_down = false;
                     self.keyboard.touch(None);
                     let restore = self.last_combined_layout;
@@ -782,7 +773,6 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
         }"#;
             src = src.replace(win_ev_needle, win_ev_rep);
 
-            // Raccourcis clavier F6 (cycle Ultra-Wide 5:3 / 16:9 / 21:9 / 32:9) et F7 (Détacher / Regrouper les 2 écrans)
             let key_needle = "                KeyCode::F9 => self.set_layout(self.active.layout.next()),";
             let key_rep = r#"                KeyCode::F6 => {
                     let shapes = settings::TopShape::ALL;
@@ -793,7 +783,6 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
                 KeyCode::F9 => self.set_layout(self.active.layout.next()),"#;
             src = src.replace(key_needle, key_rep);
 
-            // Tactile sur la 2e fenêtre
             let touch_needle = "    fn touch(&mut self) {\n        let Some(window) = &self.window else { return };";
             let touch_rep = r#"    fn touch_bottom_window(&mut self) {
         let Some(window) = &self.bottom_window else { return };
@@ -825,7 +814,6 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
         let Some(window) = &self.window else { return };"#;
             src = src.replace(touch_needle, touch_rep);
 
-            // `apply_layout` + initialisation `resumed`
             let apply_needle = "    fn apply_layout(&mut self) {\n        if let Some(backend) = &mut self.backend {";
             let apply_rep = r#"    fn apply_layout(&mut self) {
         zakuro_gpu::set_top_aspect_scale(self.active.top_shape.width());
@@ -841,33 +829,34 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
                 "zakuro_gpu::set_top_aspect_scale(self.active.top_shape.width());\n                backend.set_top_width(self.active.top_shape.width());",
             );
 
-            // Actions du menu Pause (`ToggleDualWindows`, `SetLayout`, `SetTopShape`)
             src = src.replace(
                 "            Action::Quit => event_loop.exit(),",
-                "            Action::ToggleDualWindows => self.toggle_dual_windows(),\n            Action::SetLayout(layout) => {\n                self.set_layout(layout);\n                self.menus.toast = Some((format!(\"Disposition : {}\", layout.name()), Instant::now()));\n            }\n            Action::SetTopShape(shape) => self.set_top_shape(shape),\n            Action::Quit => event_loop.exit(),",
+                "            Action::ToggleDualWindows => self.toggle_dual_windows(),\n            Action::SetLayout(layout) => self.set_layout(layout),\n            Action::SetTopShape(shape) => self.set_top_shape(shape),\n            Action::Quit => event_loop.exit(),",
             );
 
-            // Titre de fenêtre épuré
             src = src.replace(
                 "Some(game) => format!(\"Zakuro - {} - {}\", game.name, game.system.status_line()),",
-                "Some(game) => format!(\"{} — BlueOrb ({})\", game.name, game.system.status_line()),",
+                "Some(game) => format!(\"{} — {}\", game.name, game.system.status_line()),",
             );
             src = src.replace(
                 "Window::default_attributes().with_title(\"Zakuro\")",
-                "Window::default_attributes().with_title(\"Pokémon Alpha Sapphire — BlueOrb\")",
+                "Window::default_attributes().with_title(\"Pokémon Alpha Sapphire\")",
             );
 
-            // Passage de `active_layout` et `active_top_shape` à `menus.game(...)`
+            // Fournir `cheats` et `settings` directement au menu unifié `menus.game(...)`
+            src = src.replace(
+                "        let cheats = self.game.as_ref().filter(|_| self.menus.cheats_open).map(|game| {",
+                "        let cheats = self.game.as_ref().filter(|_| self.menus.cheats_open || self.menus.menu_open).map(|game| {",
+            );
             src = src.replace(
                 "        let (menus, library, settings, jobs, waiting) = (&mut self.menus, &self.library, &mut self.settings, &self.jobs, &self.waiting);",
                 "        let (active_layout, active_top_shape) = (self.active.layout, self.active.top_shape);\n        let (menus, library, settings, jobs, waiting) = (&mut self.menus, &self.library, &mut self.settings, &self.jobs, &self.waiting);",
             );
             src = src.replace(
                 "menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref())",
-                "menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref(), active_layout, active_top_shape)",
+                "menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref(), settings, cheats.as_deref(), active_layout, active_top_shape)",
             );
 
-            // Synchronisation dynamique (création / fermeture) + rendu zéro-copie de la 2e fenêtre dans `present`
             let present_needle = "    fn present(&mut self, event_loop: &ActiveEventLoop) {\n        let overlay = self.interface(event_loop);";
             let present_rep = r#"    fn sync_bottom_window(&mut self, event_loop: &ActiveEventLoop) {
         let wants_second = self.layout == Screens::SeparateWindows && self.game.is_some();
@@ -875,7 +864,7 @@ fn patch_zakuro_frontend_dual_window_ultrawide_and_sapphire_ui(zakuro_repo: &Pat
             let bot_scale = self.scale.clamp(2, 4);
             let bot_size = winit::dpi::LogicalSize::new(320 * bot_scale, 240 * bot_scale);
             let attrs = Window::default_attributes()
-                .with_title("Pokémon Saphir Alpha — Écran Tactile (PokéMulti-Navi)")
+                .with_title("Pokémon Saphir Alpha — Écran Tactile")
                 .with_inner_size(bot_size);
             let shared = self.backend.as_ref().and_then(Backend::shared_device);
             match Backend::create_secondary(event_loop, attrs, shared) {
@@ -988,10 +977,7 @@ pub fn write_remaster_settings_toml(
     let enh_list = active_enhancements.join(", ");
 
     let toml_text = format!(
-        r#"# Configuration Remaster générée par BlueOrb
-# Par défaut : disposition de base 3DS (stacked, 5:3).
-# En jeu : Échap ouvre le menu BlueOrb (Détacher les 2 écrans, Ultra-Wide 16:9 / 21:9 / 32:9, HD, Sauvegardes)
-# Raccourcis : F6 (Cycle 5:3 / 16:9 / 21:9 / 32:9) | F7 (Détacher / Regrouper les 2 écrans) | F11 (Plein écran)
+        r#"# Configuration générée par BlueOrb
 language = "{lang}"
 renderer = "vulkan"
 hardware_rasterizer = true
@@ -1026,65 +1012,70 @@ show_fps = false
     fs::write(settings_path, toml_text).map_err(|e| e.to_string())
 }
 
-const SAPPHIRE_THEME_FN_RS: &str = r#"
-// BLUEORB_SAPPHIRE_THEME: Thème Glassmorphism "Saphir Abyssal" pour l'interface en jeu
-fn apply_blueorb_sapphire_theme(ctx: &egui::Context) {
-    use egui::{Color32, CornerRadius, CursorIcon, Shadow, Stroke, Theme};
+const CONSOLE_THEME_FN_RS: &str = r#"
+// BLUEORB_CONSOLE_THEME: Palette mate sombre sobre, typographie large et lisible (style SteamOS / RecompUI)
+fn apply_blueorb_console_theme(ctx: &egui::Context) {
+    use egui::{Color32, CornerRadius, CursorIcon, FontFamily, FontId, Shadow, Stroke, TextStyle, Theme};
     ctx.set_theme(Theme::Dark);
     ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(7.0, 5.5);
-        style.spacing.button_padding = egui::vec2(10.0, 5.0);
-        style.spacing.window_margin = egui::Margin::same(14);
+        style.text_styles.insert(TextStyle::Small, FontId::new(12.5, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Body, FontId::new(15.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Button, FontId::new(14.5, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Heading, FontId::new(20.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Monospace, FontId::new(13.5, FontFamily::Monospace));
+
+        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        style.spacing.button_padding = egui::vec2(14.0, 8.0);
+        style.spacing.window_margin = egui::Margin::same(18);
 
         let v = &mut style.visuals;
         v.dark_mode = true;
-        v.window_fill = Color32::from_rgba_unmultiplied(9, 17, 34, 242);
-        v.panel_fill = Color32::from_rgba_unmultiplied(11, 21, 42, 242);
-        v.faint_bg_color = Color32::from_rgba_unmultiplied(18, 35, 66, 185);
-        v.extreme_bg_color = Color32::from_rgb(6, 12, 24);
-        v.code_bg_color = Color32::from_rgb(12, 24, 46);
-        v.window_corner_radius = CornerRadius::same(14);
-        v.menu_corner_radius = CornerRadius::same(10);
-        v.window_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(68, 166, 255, 105));
+        v.window_fill = Color32::from_rgb(20, 22, 28);
+        v.panel_fill = Color32::from_rgb(20, 22, 28);
+        v.faint_bg_color = Color32::from_rgb(28, 31, 39);
+        v.extreme_bg_color = Color32::from_rgb(13, 15, 19);
+        v.code_bg_color = Color32::from_rgb(15, 17, 22);
+        v.window_corner_radius = CornerRadius::same(12);
+        v.menu_corner_radius = CornerRadius::same(8);
+        v.window_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 22));
         v.window_shadow = Shadow {
-            offset: [0, 10],
-            blur: 28,
+            offset: [0, 14],
+            blur: 36,
             spread: 2,
-            color: Color32::from_black_alpha(150),
+            color: Color32::from_black_alpha(175),
         };
         v.popup_shadow = Shadow {
-            offset: [0, 6],
-            blur: 18,
-            spread: 1,
-            color: Color32::from_black_alpha(130),
+            offset: [0, 8],
+            blur: 20,
+            spread: 0,
+            color: Color32::from_black_alpha(145),
         };
         v.slider_trailing_fill = true;
         v.interact_cursor = Some(CursorIcon::PointingHand);
-        v.selection.bg_fill = Color32::from_rgb(26, 118, 220);
-        v.selection.stroke = Stroke::new(1.0, Color32::from_rgb(240, 250, 255));
-        v.hyperlink_color = Color32::from_rgb(94, 198, 255);
+        v.selection.bg_fill = Color32::from_rgb(37, 99, 235);
+        v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
 
-        v.widgets.noninteractive.bg_fill = Color32::from_rgba_unmultiplied(14, 26, 50, 220);
-        v.widgets.noninteractive.weak_bg_fill = Color32::from_rgba_unmultiplied(14, 26, 50, 180);
-        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(58, 126, 208, 70));
-        v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(224, 236, 252));
+        v.widgets.noninteractive.bg_fill = Color32::from_rgb(26, 29, 36);
+        v.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(26, 29, 36);
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16));
+        v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(235, 238, 244));
         v.widgets.noninteractive.corner_radius = CornerRadius::same(8);
 
-        v.widgets.inactive.bg_fill = Color32::from_rgb(19, 36, 66);
-        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(19, 36, 66);
-        v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(74, 150, 240, 68));
-        v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(228, 240, 255));
+        v.widgets.inactive.bg_fill = Color32::from_rgb(32, 36, 45);
+        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(32, 36, 45);
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 14));
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(235, 238, 244));
         v.widgets.inactive.corner_radius = CornerRadius::same(8);
 
-        v.widgets.hovered.bg_fill = Color32::from_rgb(28, 62, 114);
-        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(28, 62, 114);
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(96, 192, 255));
+        v.widgets.hovered.bg_fill = Color32::from_rgb(44, 50, 62);
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(44, 50, 62);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
         v.widgets.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
         v.widgets.hovered.corner_radius = CornerRadius::same(8);
 
-        v.widgets.active.bg_fill = Color32::from_rgb(32, 122, 224);
-        v.widgets.active.weak_bg_fill = Color32::from_rgb(32, 122, 224);
-        v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(150, 220, 255));
+        v.widgets.active.bg_fill = Color32::from_rgb(37, 99, 235);
+        v.widgets.active.weak_bg_fill = Color32::from_rgb(37, 99, 235);
+        v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(96, 165, 250));
         v.widgets.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
         v.widgets.active.corner_radius = CornerRadius::same(8);
 
@@ -1093,7 +1084,7 @@ fn apply_blueorb_sapphire_theme(ctx: &egui::Context) {
 }
 "#;
 
-const NEW_SAPPHIRE_GAME_MENU_RS: &str = r#"    /// BLUEORB_SAPPHIRE_GAME_MENU: Overlay Pause moderne avec contrôles directs Détacher 2 Écrans & Ultra-Wide
+const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Menu Console plein écran translucide basé sur egui::Panel (zéro bug d'alignement)
     #[allow(clippy::too_many_arguments)]
     pub fn game(
         &mut self,
@@ -1106,31 +1097,32 @@ const NEW_SAPPHIRE_GAME_MENU_RS: &str = r#"    /// BLUEORB_SAPPHIRE_GAME_MENU: O
         jobs: &[Job],
         waiting: usize,
         saved: Option<&str>,
+        settings: &mut Settings,
+        cheats: Option<&[(String, bool, String, bool)]>,
         active_layout: Screens,
         active_top_shape: TopShape,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
+        let before_settings = settings.clone();
         let ctx = ui.ctx().clone();
 
-        let pill_frame = || {
+        let hud_frame = || {
             egui::Frame::NONE
-                .fill(Color32::from_rgba_unmultiplied(8, 18, 36, 228))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(82, 182, 255, 130)))
-                .corner_radius(egui::CornerRadius::same(18))
-                .inner_margin(egui::Margin::symmetric(12, 6))
+                .fill(Color32::from_rgba_unmultiplied(15, 17, 22, 224))
+                .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(12, 7))
         };
 
         if let Some((text, since)) = &self.toast {
-            if since.elapsed() < std::time::Duration::from_millis(2600) {
+            if since.elapsed() < std::time::Duration::from_millis(2400) {
                 egui::Area::new(egui::Id::new("toast"))
-                    .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 12.0))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 14.0))
                     .interactable(false)
                     .show(&ctx, |ui| {
-                        pill_frame().show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("◆").color(Color32::from_rgb(76, 194, 255)).strong());
-                                ui.label(RichText::new(text).color(Color32::from_rgb(235, 245, 255)).strong());
-                            });
+                        hud_frame().show(ui, |ui| {
+                            ui.label(RichText::new(text).size(14.0).color(Color32::from_rgb(240, 242, 246)));
                         });
                     });
                 ctx.request_repaint();
@@ -1138,23 +1130,25 @@ const NEW_SAPPHIRE_GAME_MENU_RS: &str = r#"    /// BLUEORB_SAPPHIRE_GAME_MENU: O
                 self.toast = None;
             }
         }
-        if fast {
+        if fast && !self.menu_open {
             egui::Area::new(egui::Id::new("fast forward"))
-                .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-10.0, 10.0))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-12.0, 12.0))
                 .interactable(false)
                 .show(&ctx, |ui| {
-                    pill_frame().show(ui, |ui| {
-                        ui.label(RichText::new("»» TURBO").color(Color32::from_rgb(110, 215, 255)).monospace().strong());
+                    hud_frame().show(ui, |ui| {
+                        ui.label(RichText::new("Avance rapide").size(13.0).monospace());
                     });
                 });
         }
-        if let Some(fps) = fps {
+        if let Some(fps) = fps.filter(|_| !self.menu_open) {
             egui::Area::new(egui::Id::new("fps"))
-                .fixed_pos(egui::pos2(10.0, 10.0))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(12.0, 12.0))
                 .interactable(false)
                 .show(&ctx, |ui| {
-                    pill_frame().show(ui, |ui| {
-                        ui.label(RichText::new(format!("{fps:.0} FPS")).color(Color32::from_rgb(130, 225, 195)).monospace().strong());
+                    hud_frame().show(ui, |ui| {
+                        ui.label(RichText::new(format!("{fps:.0} FPS")).size(13.0).monospace());
                     });
                 });
         }
@@ -1162,379 +1156,1008 @@ const NEW_SAPPHIRE_GAME_MENU_RS: &str = r#"    /// BLUEORB_SAPPHIRE_GAME_MENU: O
             return actions;
         }
 
-        // Voile sombre Saphir en arrière-plan (cliquer en dehors du menu reprend la partie si aucune sous-fenêtre n'est ouverte)
-        let subwindow_open = self.settings_open || self.game_settings.is_some() || self.cheats_open || self.multiplayer_open;
-        let screen_rect = ctx.content_rect();
-        egui::Area::new(egui::Id::new("blueorb_pause_backdrop"))
-            .order(egui::Order::Background)
-            .fixed_pos(screen_rect.min)
-            .show(&ctx, |ui| {
-                let (rect, resp) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
-                ui.painter().rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(4, 9, 20, 148));
-                if resp.clicked() && !subwindow_open {
-                    actions.push(Action::Resume);
-                }
-            });
+        let nav_tabs: [(u8, &str); 5] = [
+            (0, "Partie"),
+            (1, "Écrans & Format"),
+            (2, "Graphismes & Son"),
+            (3, "Contrôles"),
+            (4, "Codes & Réseau"),
+        ];
 
-        let card_width = 348.0f32.min((screen_rect.width() - 24.0).max(220.0));
-        let max_scroll_h = (screen_rect.height() - 40.0).max(150.0);
+        let total_w = ui.available_width();
+        let wide_mode = total_w >= 560.0;
 
-        let modal_frame = egui::Frame::NONE
-            .fill(Color32::from_rgba_unmultiplied(9, 18, 36, 246))
-            .stroke(egui::Stroke::new(1.2, Color32::from_rgba_unmultiplied(78, 178, 255, 135)))
-            .corner_radius(egui::CornerRadius::same(16))
-            .shadow(egui::Shadow {
-                offset: [0, 12],
-                blur: 32,
-                spread: 3,
-                color: Color32::from_black_alpha(165),
-            })
-            .inner_margin(egui::Margin::same(16));
+        if wide_mode {
+            let sidebar_w = 212.0;
+            let sidebar_frame = egui::Frame::NONE
+                .fill(Color32::from_rgba_unmultiplied(13, 15, 20, 248))
+                .inner_margin(egui::Margin::symmetric(16, 22));
 
-        let section_frame = || {
-            egui::Frame::NONE
-                .fill(Color32::from_rgba_unmultiplied(15, 29, 56, 210))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(64, 142, 230, 65)))
-                .corner_radius(egui::CornerRadius::same(10))
-                .inner_margin(egui::Margin::symmetric(10, 9))
-        };
+            egui::Panel::left("blueorb_pause_sidebar")
+                .resizable(false)
+                .exact_size(sidebar_w)
+                .show_separator_line(true)
+                .frame(sidebar_frame)
+                .show(ui, |ui| {
+                    let item_w = ui.available_width();
 
-        egui::Window::new("BlueOrb Pause")
-            .id(egui::Id::new("blueorb_pause_modal"))
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .frame(modal_frame)
-            .fixed_size([card_width, 0.0])
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(&ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(max_scroll_h).show(ui, |ui| {
-                    ui.set_width(card_width);
-
-                    // 1. En-tête Saphir + Badge AOT Natif
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(name).size(16.5).strong().color(Color32::WHITE));
-                            let shape_short = match active_top_shape {
-                                TopShape::Console => "5:3 Base",
-                                TopShape::Wide16x9 => "16:9 Widescreen",
-                                TopShape::Wide21x9 => "21:9 Ultra-Wide",
-                                TopShape::Wide32x9 => "32:9 Super UW",
-                            };
-                            let layout_short = match active_layout {
-                                Screens::Stacked => "Écrans superposés",
-                                Screens::LargeTop => "Grand écran haut",
-                                Screens::SideBySide => "Côte à côte",
-                                Screens::SeparateWindows => "2 Fenêtres détachées",
-                                Screens::TopOnly => "Écran haut seul",
-                                Screens::BottomOnly => "Écran bas seul",
-                            };
-                            ui.label(
-                                RichText::new(format!("{shape_short}  •  {layout_short}"))
-                                    .size(11.5)
-                                    .color(Color32::from_rgb(138, 184, 232)),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
-                            let badge_txt = if recompiled { "◆ AOT NATIF" } else { "INTERPRÉTÉ" };
-                            let badge_col = if recompiled {
-                                Color32::from_rgb(92, 206, 255)
-                            } else {
-                                Color32::from_rgb(220, 180, 100)
-                            };
-                            egui::Frame::NONE
-                                .fill(Color32::from_rgba_unmultiplied(20, 56, 102, 210))
-                                .stroke(egui::Stroke::new(1.0, badge_col.gamma_multiply(0.55)))
-                                .corner_radius(egui::CornerRadius::same(12))
-                                .inner_margin(egui::Margin::symmetric(8, 3))
-                                .show(ui, |ui| {
-                                    ui.label(RichText::new(badge_txt).size(10.5).strong().color(badge_col));
-                                });
-                        });
-                    });
-
-                    ui.add_space(6.0);
-
-                    // 2. Bouton principal Reprendre
-                    let resume_btn = egui::Button::new(
-                        RichText::new("▶   Reprendre la partie").size(14.0).strong().color(Color32::WHITE),
-                    )
-                    .fill(Color32::from_rgb(26, 116, 222))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(112, 198, 255)))
-                    .corner_radius(egui::CornerRadius::same(10));
-                    if ui.add_sized([card_width, 34.0], resume_btn).clicked() {
-                        actions.push(Action::Resume);
-                    }
-
-                    ui.add_space(6.0);
-
-                    // 3. Carte ÉCRANS & ULTRA-WIDE
-                    section_frame().show(ui, |ui| {
-                        let inner_w = (card_width - 22.0).max(180.0);
-                        ui.set_width(inner_w);
-                        ui.label(
-                            RichText::new("AFFICHAGE, DOUBLE ÉCRAN & ULTRA-WIDE")
-                                .size(10.5)
-                                .strong()
-                                .color(Color32::from_rgb(110, 184, 250)),
-                        );
-                        ui.add_space(3.0);
-
-                        // Bouton 1-clic Détacher / Regrouper les 2 écrans
-                        let detached = active_layout == Screens::SeparateWindows;
-                        let detach_label = if detached {
-                            "⊞  Regrouper les 2 écrans en 1 fenêtre  (F7)"
-                        } else {
-                            "⧉  Détacher les 2 écrans (2 fenêtres · F7)"
-                        };
-                        let detach_btn = egui::Button::new(
-                            RichText::new(detach_label)
-                                .size(12.5)
-                                .strong()
-                                .color(Color32::WHITE),
-                        )
-                        .fill(if detached {
-                            Color32::from_rgb(18, 128, 168)
-                        } else {
-                            Color32::from_rgb(24, 52, 96)
-                        })
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            if detached {
-                                Color32::from_rgb(110, 230, 255)
-                            } else {
-                                Color32::from_rgb(76, 158, 245)
-                            },
-                        ))
-                        .corner_radius(egui::CornerRadius::same(8));
-
-                        if ui
-                            .add_sized([inner_w, 30.0], detach_btn)
-                            .on_hover_text("Ouvre l'écran tactile PokéMulti-Navi dans une seconde fenêtre indépendante, ou regroupe les deux écrans.")
-                            .clicked()
-                        {
-                            actions.push(Action::ToggleDualWindows);
-                        }
-
-                        ui.add_space(4.0);
-
-                        // Sélecteur rapide de disposition 1 fenêtre
-                        let layouts_row = [
-                            (Screens::Stacked, "Classique"),
-                            (Screens::LargeTop, "Grand Haut"),
-                            (Screens::SideBySide, "Côte à côte"),
-                        ];
-                        let pill_w3 = (inner_w - 12.0) / 3.0;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (lay, label) in layouts_row {
-                                let selected = active_layout == lay;
-                                let btn = egui::Button::new(
-                                    RichText::new(label).size(11.5).strong().color(if selected {
-                                        Color32::WHITE
-                                    } else {
-                                        Color32::from_rgb(195, 215, 240)
-                                    }),
-                                )
-                                .fill(if selected {
-                                    Color32::from_rgb(32, 118, 218)
-                                } else {
-                                    Color32::from_rgb(16, 30, 56)
-                                })
-                                .stroke(egui::Stroke::new(
-                                    1.0,
-                                    if selected {
-                                        Color32::from_rgb(125, 205, 255)
-                                    } else {
-                                        Color32::from_rgba_unmultiplied(64, 130, 210, 60)
-                                    },
-                                ));
-                                if ui.add_sized([pill_w3, 24.0], btn).clicked() && !selected {
-                                    actions.push(Action::SetLayout(lay));
-                                }
+                    // Pied de la barre latérale ancré proprement en bas
+                    egui::Panel::bottom("blueorb_pause_sidebar_footer")
+                        .resizable(false)
+                        .show_separator_line(false)
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 0, right: 0, top: 10, bottom: 0 }))
+                        .show(ui, |ui| {
+                            if console_primary_button(ui, item_w, 42.0, "Reprendre") {
+                                actions.push(Action::Resume);
                             }
-                        });
-
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new("Format 3D & Ultra-Wide (F6)")
-                                .size(11.0)
-                                .color(Color32::from_rgb(168, 198, 232)),
-                        );
-
-                        // Sélecteur rapide Ultra-Wide 5:3 / 16:9 / 21:9 / 32:9
-                        let shapes_row = [
-                            (TopShape::Console, "5:3 Base"),
-                            (TopShape::Wide16x9, "16:9"),
-                            (TopShape::Wide21x9, "21:9 UW"),
-                            (TopShape::Wide32x9, "32:9"),
-                        ];
-                        let pill_w4 = (inner_w - 18.0) / 4.0;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (sh, label) in shapes_row {
-                                let selected = active_top_shape == sh;
-                                let btn = egui::Button::new(
-                                    RichText::new(label).size(11.5).strong().color(if selected {
-                                        Color32::WHITE
-                                    } else {
-                                        Color32::from_rgb(195, 215, 240)
-                                    }),
-                                )
-                                .fill(if selected {
-                                    Color32::from_rgb(32, 118, 218)
-                                } else {
-                                    Color32::from_rgb(16, 30, 56)
-                                })
-                                .stroke(egui::Stroke::new(
-                                    1.0,
-                                    if selected {
-                                        Color32::from_rgb(125, 205, 255)
-                                    } else {
-                                        Color32::from_rgba_unmultiplied(64, 130, 210, 60)
-                                    },
-                                ));
-                                if ui.add_sized([pill_w4, 25.0], btn).clicked() && !selected {
-                                    actions.push(Action::SetTopShape(sh));
-                                }
-                            }
-                        });
-                    });
-
-                    ui.add_space(6.0);
-
-                    // 4. Carte SAUVEGARDE D'ÉTAT RAPIDE
-                    section_frame().show(ui, |ui| {
-                        let inner_w = (card_width - 22.0).max(180.0);
-                        ui.set_width(inner_w);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("ÉTATS DE SAUVEGARDE")
-                                    .size(10.5)
-                                    .strong()
-                                    .color(Color32::from_rgb(110, 184, 250)),
-                            );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button("▶").clicked() {
-                                    self.slot = if self.slot >= 9 { 1 } else { self.slot + 1 };
-                                }
-                                ui.label(RichText::new(format!("Slot {}", self.slot)).strong().size(12.0));
-                                if ui.small_button("◀").clicked() {
-                                    self.slot = if self.slot <= 1 { 9 } else { self.slot - 1 };
-                                }
-                                ui.label(RichText::new(saved.unwrap_or("vide")).size(11.0).weak());
-                            });
-                        });
-                        ui.add_space(3.0);
-                        let half = (inner_w - 6.0) / 2.0;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            if ui
-                                .add_sized([half, 27.0], egui::Button::new("Sauvegarder (F5)"))
-                                .clicked()
-                            {
-                                actions.push(Action::SaveState);
-                            }
-                            if ui
-                                .add_enabled(
-                                    saved.is_some(),
-                                    egui::Button::new("Charger (F8)").min_size(Vec2::new(half, 27.0)),
-                                )
-                                .clicked()
-                            {
-                                actions.push(Action::LoadState);
-                            }
-                        });
-                    });
-
-                    ui.add_space(6.0);
-
-                    // 5. Grille 2 colonnes d'options & outils
-                    let col_w = (card_width - 8.0) / 2.0;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if ui.add_sized([col_w, 29.0], egui::Button::new("⚙  Réglages")).clicked() {
-                            self.settings_open = true;
-                        }
-                        if ui
-                            .add_sized([col_w, 29.0], egui::Button::new("✨  HD & Cheats"))
-                            .on_hover_text("Activer / désactiver No Outlines (HD), mode 60 FPS Turbo et codes Action Replay.")
-                            .clicked()
-                        {
-                            self.cheats_open = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if ui.add_sized([col_w, 29.0], egui::Button::new("⛶  Plein écran (F11)")).clicked() {
-                            actions.push(Action::Fullscreen);
-                        }
-                        if ui.add_sized([col_w, 29.0], egui::Button::new("🌐  Multijoueur")).clicked() {
-                            self.multiplayer_open = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if ui.add_sized([col_w, 29.0], egui::Button::new("↻  Redémarrer")).clicked() {
-                            actions.push(Action::Reset);
-                        }
-                        if let Some(pid) = program_id {
-                            if ui.add_sized([col_w, 29.0], egui::Button::new("🎛  Profil du jeu")).clicked() {
-                                self.game_settings = Some((pid, name.to_owned()));
-                            }
-                        } else if ui.add_sized([col_w, 29.0], egui::Button::new("📷  Image QR")).clicked() {
-                            actions.push(Action::ChooseCameraPicture);
-                        }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.separator();
-
-                    // 6. Barre inférieure compacte
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button(RichText::new("📷 QR / Caméra").size(11.5))
-                            .on_hover_text("Choisir une image (ex: QR Code Base Secrète) pour l'appareil photo 3DS.")
-                            .clicked()
-                        {
-                            actions.push(Action::ChooseCameraPicture);
-                        }
-                        if ui
-                            .button(RichText::new("📋 Diagnostic").size(11.5))
-                            .clicked()
-                        {
-                            actions.push(Action::CopyReport);
-                        }
-                        if ui
-                            .button(RichText::new("🏠 Bibliothèque").size(11.5))
-                            .clicked()
-                        {
-                            actions.push(Action::Library);
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let quit_btn = egui::Button::new(
-                                RichText::new("⏻ Quitter").size(12.0).strong().color(Color32::from_rgb(255, 195, 195)),
-                            )
-                            .fill(Color32::from_rgba_unmultiplied(92, 24, 34, 210))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(235, 95, 110, 110)));
-                            if ui.add(quit_btn).clicked() {
+                            ui.add_space(8.0);
+                            if console_danger_button(ui, item_w, 38.0, "Quitter le jeu") {
                                 actions.push(Action::Quit);
                             }
                         });
-                    });
 
-                    for job in jobs.iter().filter(|job| !job.stage().finished()) {
-                        ui.separator();
-                        ui.label(&job.name);
-                        progress(ui, job);
-                    }
-                    if waiting > 0 {
-                        ui.label(RichText::new(format!("{waiting} more waiting to recompile")).weak());
+                    // Haut + onglets de la barre latérale
+                    ui.label(RichText::new(name).size(16.5).strong().color(Color32::WHITE));
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(if recompiled { "Exécution native AOT" } else { "Mode interprété" })
+                            .size(12.5)
+                            .color(Color32::from_rgb(132, 140, 156)),
+                    );
+                    ui.add_space(18.0);
+
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    for (idx, title) in nav_tabs {
+                        if console_nav_button(ui, item_w, title, self.tab == idx) {
+                            self.tab = idx;
+                        }
                     }
                 });
-            });
+        } else {
+            // Barre supérieure si la fenêtre est étroite (ex: 400px à l'échelle 1x)
+            let top_frame = egui::Frame::NONE
+                .fill(Color32::from_rgba_unmultiplied(13, 15, 20, 248))
+                .inner_margin(egui::Margin::symmetric(12, 10));
+
+            egui::Panel::top("blueorb_pause_topbar")
+                .resizable(false)
+                .show_separator_line(true)
+                .frame(top_frame)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (idx, title) in nav_tabs {
+                            let sel = self.tab == idx;
+                            let btn = egui::Button::new(
+                                RichText::new(title)
+                                    .size(13.0)
+                                    .color(if sel { Color32::WHITE } else { Color32::from_rgb(172, 180, 194) }),
+                            )
+                            .fill(if sel { Color32::from_rgb(37, 99, 235) } else { Color32::from_rgb(24, 28, 36) });
+                            if ui.add(btn).clicked() {
+                                self.tab = idx;
+                            }
+                        }
+                    });
+                });
+        }
+
+        let central_margin_x: i8 = if wide_mode { 28 } else { 16 };
+        let central_frame = egui::Frame::NONE
+            .fill(Color32::from_rgba_unmultiplied(19, 22, 29, 242))
+            .inner_margin(egui::Margin::symmetric(central_margin_x, 22));
+
+        egui::CentralPanel::default().frame(central_frame).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("blueorb_pause_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let body_w = (ui.available_width() - 12.0).clamp(240.0, 720.0);
+                    ui.set_max_width(body_w);
+                    self.draw_console_tab_body(
+                        ui,
+                        body_w,
+                        program_id,
+                        jobs,
+                        waiting,
+                        saved,
+                        settings,
+                        cheats,
+                        active_layout,
+                        active_top_shape,
+                        &mut actions,
+                    );
+                    ui.add_space(16.0);
+                });
+        });
+
+        if *settings != before_settings {
+            if let Some(pid) = program_id {
+                if let Some(own) = settings.per_game.get_mut(&game_key(pid)) {
+                    if own.resolution.is_some() {
+                        own.resolution = Some(settings.resolution);
+                    }
+                    if own.frame_interpolation.is_some() {
+                        own.frame_interpolation = Some(settings.frame_interpolation);
+                    }
+                    if own.scale.is_some() {
+                        own.scale = Some(settings.scale);
+                    }
+                    if own.filter.is_some() {
+                        own.filter = Some(settings.filter);
+                    }
+                    if own.integer_scale.is_some() {
+                        own.integer_scale = Some(settings.integer_scale);
+                    }
+                    if own.language.is_some() {
+                        own.language = Some(settings.language);
+                    }
+                }
+            }
+            actions.push(Action::Settings);
+        }
         actions
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_console_tab_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        width: f32,
+        program_id: Option<u64>,
+        jobs: &[Job],
+        waiting: usize,
+        saved: Option<&str>,
+        settings: &mut Settings,
+        cheats: Option<&[(String, bool, String, bool)]>,
+        active_layout: Screens,
+        active_top_shape: TopShape,
+        actions: &mut Vec<Action>,
+    ) {
+        match self.tab {
+            0 => {
+                // ONGLET 0 : PARTIE
+                ui.label(RichText::new("Partie en cours").size(22.0).strong().color(Color32::WHITE));
+                let layout_desc = match active_layout {
+                    Screens::Stacked => "Écrans superposés (3DS)",
+                    Screens::LargeTop => "Grand écran supérieur",
+                    Screens::SideBySide => "Écrans côte à côte",
+                    Screens::SeparateWindows => "Deux fenêtres indépendantes",
+                    Screens::TopOnly => "Écran supérieur seul",
+                    Screens::BottomOnly => "Écran tactile seul",
+                };
+                let ratio_desc = match active_top_shape {
+                    TopShape::Console => "5:3 Original",
+                    TopShape::Wide16x9 => "16:9 Large",
+                    TopShape::Wide21x9 => "21:9 Ultra-Wide",
+                    TopShape::Wide32x9 => "32:9 Super Large",
+                };
+                ui.label(
+                    RichText::new(format!("{ratio_desc}  ·  {layout_desc}"))
+                        .size(14.0)
+                        .color(Color32::from_rgb(148, 156, 172)),
+                );
+                ui.add_space(18.0);
+
+                if console_primary_button(ui, width, 46.0, "Reprendre la partie  (Échap)") {
+                    actions.push(Action::Resume);
+                }
+                ui.add_space(10.0);
+
+                let half_top = (width - 10.0) / 2.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if console_secondary_button(ui, half_top, 42.0, "Plein écran  (F11)", true) {
+                        actions.push(Action::Fullscreen);
+                    }
+                    if console_secondary_button(ui, half_top, 42.0, "Redémarrer le jeu", true) {
+                        actions.push(Action::Reset);
+                    }
+                });
+
+                ui.add_space(18.0);
+
+                console_card(ui, width, |ui, cw| {
+                    let state_info = saved.unwrap_or("Emplacement vide");
+                    ui.label(RichText::new("Sauvegardes rapides").size(16.5).strong().color(Color32::WHITE));
+                    ui.label(
+                        RichText::new(format!("Slot sélectionné : {}  —  {state_info}", self.slot))
+                            .size(13.0)
+                            .color(Color32::from_rgb(148, 156, 172)),
+                    );
+                    ui.add_space(10.0);
+
+                    let slot_opts: [(u8, &str); 9] = [
+                        (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5"), (6, "6"), (7, "7"), (8, "8"), (9, "9"),
+                    ];
+                    if let Some(s) = console_segmented(ui, cw, 40.0, self.slot, &slot_opts, "slots_seg") {
+                        self.slot = s;
+                    }
+
+                    ui.add_space(12.0);
+                    let half = (cw - 10.0) / 2.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        if console_secondary_button(ui, half, 42.0, &format!("Sauvegarder slot {}  (F5)", self.slot), true) {
+                            actions.push(Action::SaveState);
+                        }
+                        if console_secondary_button(ui, half, 42.0, &format!("Charger slot {}  (F8)", self.slot), saved.is_some()) {
+                            actions.push(Action::LoadState);
+                        }
+                    });
+                });
+
+                ui.add_space(16.0);
+                let half_bot = (width - 10.0) / 2.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if console_secondary_button(ui, half_bot, 40.0, "Bibliothèque", true) {
+                        actions.push(Action::Library);
+                    }
+                    if console_danger_button(ui, half_bot, 40.0, "Quitter le jeu") {
+                        actions.push(Action::Quit);
+                    }
+                });
+
+                for job in jobs.iter().filter(|job| !job.stage().finished()) {
+                    ui.add_space(10.0);
+                    ui.label(&job.name);
+                    progress(ui, job);
+                }
+                if waiting > 0 {
+                    ui.label(RichText::new(format!("{waiting} en attente")).weak());
+                }
+            }
+
+            1 => {
+                // ONGLET 1 : ÉCRANS & FORMAT ULTRA-WIDE
+                ui.label(RichText::new("Disposition des écrans").size(22.0).strong().color(Color32::WHITE));
+                ui.label(
+                    RichText::new("Choisissez l'agencement ou détachez l'écran tactile sur une deuxième fenêtre (touche F7).")
+                        .size(14.0)
+                        .color(Color32::from_rgb(148, 156, 172)),
+                );
+                ui.add_space(14.0);
+
+                // Grille 2x2 de grandes cartes horizontales lisibles (aucune coupure de texte !)
+                let card_w = (width - 12.0) / 2.0;
+                let row1 = [
+                    (Screens::Stacked, "Superposé (Base)", "Écran haut au-dessus du bas", 0u8),
+                    (Screens::SeparateWindows, "Deux fenêtres (F7)", "Détacher l'écran tactile", 3),
+                ];
+                let row2 = [
+                    (Screens::LargeTop, "Grand écran", "Grand écran haut + petit bas", 1u8),
+                    (Screens::SideBySide, "Côte à côte", "Gauche et droite alignés", 2),
+                ];
+                for row in [row1, row2] {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        for (lay, title, sub, icon_kind) in row {
+                            let selected = active_layout == lay;
+                            if console_screen_layout_card(ui, Vec2::new(card_w, 76.0), title, sub, icon_kind, selected) && !selected {
+                                if lay == Screens::SeparateWindows {
+                                    actions.push(Action::ToggleDualWindows);
+                                } else {
+                                    actions.push(Action::SetLayout(lay));
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
+
+                ui.add_space(10.0);
+                ui.label(RichText::new("Format 3D & Ultra-Wide  (F6)").size(18.0).strong().color(Color32::WHITE));
+                ui.label(
+                    RichText::new("Élargit le champ de vision 3D horizontal sans étirer les modèles ni l'interface.")
+                        .size(13.5)
+                        .color(Color32::from_rgb(148, 156, 172)),
+                );
+                ui.add_space(8.0);
+
+                let shape_opts = [
+                    (TopShape::Console, "5:3 Base"),
+                    (TopShape::Wide16x9, "16:9"),
+                    (TopShape::Wide21x9, "21:9 Ultra-Wide"),
+                    (TopShape::Wide32x9, "32:9"),
+                ];
+                if let Some(chosen) = console_segmented(ui, width, 42.0, active_top_shape, &shape_opts, "shape_seg") {
+                    actions.push(Action::SetTopShape(chosen));
+                }
+
+                ui.add_space(16.0);
+                console_card(ui, width, |ui, cw| {
+                    ui.label(RichText::new("Taille de la fenêtre").size(15.0).strong().color(Color32::WHITE));
+                    ui.add_space(6.0);
+                    let scales = [(1u32, "1x"), (2, "2x"), (3, "3x"), (4, "4x"), (5, "5x")];
+                    if let Some(s) = console_segmented(ui, cw, 38.0, settings.scale, &scales, "scale_seg") {
+                        settings.scale = s;
+                    }
+
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("Filtre de mise à l'échelle").size(15.0).strong().color(Color32::WHITE));
+                    ui.add_space(6.0);
+                    let filters = [
+                        (Filter::Sharp, "Net (Recommandé)"),
+                        (Filter::Smooth, "Doux"),
+                        (Filter::Pixels, "Pixels bruts"),
+                    ];
+                    if let Some(f) = console_segmented(ui, cw, 38.0, settings.filter, &filters, "filter_seg") {
+                        settings.filter = f;
+                    }
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    console_toggle_row(
+                        ui,
+                        cw,
+                        "Échelle entière stricte",
+                        "Multiples entiers exacts avec bordures.",
+                        &mut settings.integer_scale,
+                    );
+                });
+            }
+
+            2 => {
+                // ONGLET 2 : GRAPHISMES & SON
+                ui.label(RichText::new("Graphismes & Audio").size(22.0).strong().color(Color32::WHITE));
+                ui.label(
+                    RichText::new("Rendu 3D matériel, suppression des contours noirs HD et réglages audio.")
+                        .size(14.0)
+                        .color(Color32::from_rgb(148, 156, 172)),
+                );
+                ui.add_space(14.0);
+
+                console_card(ui, width, |ui, cw| {
+                    ui.label(RichText::new("Résolution interne 3D").size(15.5).strong().color(Color32::WHITE));
+                    ui.label(
+                        RichText::new("5x = QHD (2000×1200), 8x = 4K. S'applique au prochain démarrage ou redémarrage.")
+                            .size(12.5)
+                            .color(Color32::from_rgb(148, 156, 172)),
+                    );
+                    ui.add_space(8.0);
+                    let res_opts = [
+                        (1u32, "1x"),
+                        (2, "2x"),
+                        (3, "3x"),
+                        (4, "4x"),
+                        (5, "5x"),
+                        (6, "6x"),
+                        (8, "8x"),
+                    ];
+                    if let Some(r) = console_segmented(ui, cw, 40.0, settings.resolution, &res_opts, "res_seg") {
+                        settings.resolution = r;
+                    }
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    console_toggle_row(
+                        ui,
+                        cw,
+                        "Fluidité 60 FPS (Interpolation GPU)",
+                        "Images intermédiaires à 60 FPS sans accélérer la vitesse du jeu.",
+                        &mut settings.frame_interpolation,
+                    );
+
+                    if let Some(cheat_list) = cheats {
+                        for (idx, (cname, enabled, notes, builtin)) in cheat_list.iter().enumerate() {
+                            if !*builtin {
+                                continue;
+                            }
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            let mut current = *enabled;
+                            let title_fr = if cname.contains("No Outlines") {
+                                "Supprimer les contours noirs (HD)"
+                            } else if cname == "60 FPS" {
+                                "Mode Turbo 2x (Vitesse doublée)"
+                            } else {
+                                cname.as_str()
+                            };
+                            let desc_fr = if cname.contains("No Outlines") {
+                                "Retire en direct les traits noirs autour des personnages et Pokémon."
+                            } else if cname == "60 FPS" {
+                                "Double la vitesse d'exécution globale du moteur."
+                            } else {
+                                notes.as_str()
+                            };
+                            if console_toggle_row(ui, cw, title_fr, desc_fr, &mut current) {
+                                actions.push(Action::Cheat(idx, current));
+                            }
+                        }
+                    }
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    console_toggle_row(
+                        ui,
+                        cw,
+                        "Packs de textures personnalisés",
+                        "Charge les textures placées dans le dossier mods.",
+                        &mut settings.texture_packs,
+                    );
+                });
+
+                ui.add_space(16.0);
+
+                console_card(ui, width, |ui, cw| {
+                    let pct = (settings.volume * 100.0).round() as i32;
+                    ui.label(
+                        RichText::new(format!("Volume principal  —  {pct}%"))
+                            .size(15.5)
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
+                    ui.add_space(6.0);
+                    ui.spacing_mut().slider_width = cw;
+                    ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).show_value(false));
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    console_toggle_row(ui, cw, "Couper le son", "Désactive la sortie audio.", &mut settings.mute);
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    console_toggle_row(
+                        ui,
+                        cw,
+                        "Compteur d'images par seconde (FPS)",
+                        "Affiche les FPS en haut à gauche de l'écran.",
+                        &mut settings.show_fps,
+                    );
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("Langue de la console (au redémarrage)").size(15.0).strong().color(Color32::WHITE));
+                    ui.add_space(6.0);
+                    let lang_opts = [
+                        (Language::French, "Français"),
+                        (Language::English, "English"),
+                        (Language::Japanese, "日本語"),
+                        (Language::German, "Deutsch"),
+                        (Language::Spanish, "Español"),
+                        (Language::Italian, "Italiano"),
+                    ];
+                    if let Some(l) = console_segmented(ui, cw, 38.0, settings.language, &lang_opts, "lang_seg") {
+                        settings.language = l;
+                    }
+                });
+            }
+
+            3 => {
+                // ONGLET 3 : CONTRÔLES
+                ui.label(RichText::new("Contrôles").size(22.0).strong().color(Color32::WHITE));
+                ui.label(
+                    RichText::new("Cliquez sur une ligne pour réassigner une touche clavier ou un bouton manette.")
+                        .size(14.0)
+                        .color(Color32::from_rgb(148, 156, 172)),
+                );
+                ui.add_space(10.0);
+                if console_secondary_button(ui, 220.0, 38.0, "Réinitialiser par défaut", true) {
+                    settings.keys = Keys::default();
+                    settings.pad = PadButtons::default();
+                    self.rebinding = None;
+                    self.rebinding_pad = None;
+                }
+                ui.add_space(14.0);
+
+                console_card(ui, width, |ui, cw| {
+                    ui.label(RichText::new("Clavier").size(16.5).strong().color(Color32::WHITE));
+                    ui.add_space(8.0);
+                    for (i, (kname, key)) in settings.keys.all_mut().into_iter().enumerate() {
+                        let waiting_this = self.rebinding == Some(i);
+                        let badge = if waiting_this { "Appuyez…".to_owned() } else { key_name(*key) };
+                        if console_binding_row(ui, cw, kname, &badge, waiting_this) {
+                            self.rebinding = Some(i);
+                            self.rebinding_pad = None;
+                        }
+                    }
+                });
+
+                ui.add_space(16.0);
+
+                console_card(ui, width, |ui, cw| {
+                    ui.label(RichText::new("Manette").size(16.5).strong().color(Color32::WHITE));
+                    ui.add_space(8.0);
+                    for (i, (bname, button)) in settings.pad.all_mut().into_iter().enumerate() {
+                        let waiting_this = self.rebinding_pad == Some(i);
+                        let badge = if waiting_this { "Appuyez…" } else { button_name(*button) };
+                        if console_binding_row(ui, cw, bname, badge, waiting_this) {
+                            self.rebinding_pad = Some(i);
+                            self.rebinding = None;
+                        }
+                    }
+                });
+            }
+
+            _ => {
+                // ONGLET 4 : CODES, MODS & RÉSEAU
+                ui.label(RichText::new("Codes, Mods & Multijoueur").size(22.0).strong().color(Color32::WHITE));
+                ui.label(
+                    RichText::new("Salons sans-fil locaux, dossier mods, image caméra QR et codes Action Replay.")
+                        .size(14.0)
+                        .color(Color32::from_rgb(148, 156, 172)),
+                );
+                ui.add_space(14.0);
+
+                let half = (width - 10.0) / 2.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if console_secondary_button(ui, half, 42.0, "Salons Multijoueur local", true) {
+                        self.multiplayer_open = true;
+                    }
+                    if console_secondary_button(ui, half, 42.0, "Image Caméra / QR Code", true) {
+                        actions.push(Action::ChooseCameraPicture);
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if let Some(pid) = program_id {
+                        if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier Mods", true) {
+                            actions.push(Action::Mods(pid));
+                        }
+                    } else if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier Cheats", true) {
+                        actions.push(Action::CheatsFolder);
+                    }
+                    if console_secondary_button(ui, half, 42.0, "Copier le diagnostic", true) {
+                        actions.push(Action::CopyReport);
+                    }
+                });
+
+                ui.add_space(16.0);
+
+                console_card(ui, width, |ui, cw| {
+                    ui.label(RichText::new("Codes Action Replay").size(16.5).strong().color(Color32::WHITE));
+                    ui.add_space(6.0);
+                    let btn_half = (cw - 10.0) / 2.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        if console_secondary_button(ui, btn_half, 36.0, "Recharger le fichier", true) {
+                            actions.push(Action::ReloadCheats);
+                        }
+                        if console_secondary_button(ui, btn_half, 36.0, "Ouvrir le dossier cheats", true) {
+                            actions.push(Action::CheatsFolder);
+                        }
+                    });
+                    ui.add_space(10.0);
+
+                    if let Some(cheat_list) = cheats {
+                        let user_cheats: Vec<_> = cheat_list.iter().enumerate().filter(|(_, c)| !c.3).collect();
+                        if user_cheats.is_empty() {
+                            ui.label(
+                                RichText::new("Aucun code personnalisé enregistré.")
+                                    .size(13.5)
+                                    .color(Color32::from_rgb(148, 156, 172)),
+                            );
+                        } else {
+                            for (idx, (cname, enabled, notes, _)) in user_cheats {
+                                let mut on = *enabled;
+                                if console_toggle_row(ui, cw, cname, notes, &mut on) {
+                                    actions.push(Action::Cheat(idx, on));
+                                }
+                                ui.add_space(4.0);
+                            }
+                        }
+                    }
+
+                    ui.add_space(10.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.cheat_name)
+                            .hint_text("Nom du code")
+                            .margin(egui::Margin::symmetric(10, 8))
+                            .desired_width(cw),
+                    );
+                    ui.add_space(6.0);
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.cheat_code)
+                            .hint_text("00000000 00000000")
+                            .margin(egui::Margin::symmetric(10, 8))
+                            .desired_rows(3)
+                            .desired_width(cw)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    ui.add_space(8.0);
+                    if console_primary_button(ui, 190.0, 38.0, "Ajouter le code") && !self.cheat_code.trim().is_empty() {
+                        actions.push(Action::AddCheat(
+                            std::mem::take(&mut self.cheat_name),
+                            std::mem::take(&mut self.cheat_code),
+                        ));
+                    }
+                });
+            }
+        }
     }"#;
+
+const WIDE_CONSOLE_WIDGET_HELPERS_RS: &str = r#"
+fn console_nav_button(ui: &mut egui::Ui, width: f32, label: &str, active: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 42.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let bg = if active {
+            Color32::from_rgb(30, 35, 46)
+        } else if hovered {
+            Color32::from_rgb(22, 26, 34)
+        } else {
+            Color32::TRANSPARENT
+        };
+        if bg != Color32::TRANSPARENT {
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(8), bg);
+        }
+        if active {
+            let bar = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 4.0, rect.top() + 10.0),
+                Vec2::new(3.5, rect.height() - 20.0),
+            );
+            ui.painter().rect_filled(bar, egui::CornerRadius::same(2), Color32::from_rgb(59, 130, 246));
+        }
+        let text_col = if active || hovered {
+            Color32::WHITE
+        } else {
+            Color32::from_rgb(172, 180, 194)
+        };
+        ui.painter().text(
+            egui::pos2(rect.left() + 16.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(14.5),
+            text_col,
+        );
+    }
+    resp.clicked()
+}
+
+fn console_primary_button(ui: &mut egui::Ui, width: f32, height: f32, label: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if resp.is_pointer_button_down_on() {
+            Color32::from_rgb(29, 78, 216)
+        } else if resp.hovered() {
+            Color32::from_rgb(59, 130, 246)
+        } else {
+            Color32::from_rgb(37, 99, 235)
+        };
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(9), fill);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(14.5),
+            Color32::WHITE,
+        );
+    }
+    resp.clicked()
+}
+
+fn console_secondary_button(ui: &mut egui::Ui, width: f32, height: f32, label: &str, enabled: bool) -> bool {
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), sense);
+    if ui.is_rect_visible(rect) {
+        let fill = if !enabled {
+            Color32::from_rgb(24, 27, 34)
+        } else if resp.is_pointer_button_down_on() {
+            Color32::from_rgb(48, 55, 68)
+        } else if resp.hovered() {
+            Color32::from_rgb(40, 46, 58)
+        } else {
+            Color32::from_rgb(30, 34, 44)
+        };
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(9), fill);
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(9),
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18)),
+            egui::StrokeKind::Inside,
+        );
+        let col = if enabled {
+            Color32::from_rgb(236, 239, 245)
+        } else {
+            Color32::from_rgb(104, 112, 126)
+        };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(14.0),
+            col,
+        );
+    }
+    enabled && resp.clicked()
+}
+
+fn console_danger_button(ui: &mut egui::Ui, width: f32, height: f32, label: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if resp.hovered() {
+            Color32::from_rgb(76, 30, 36)
+        } else {
+            Color32::from_rgb(48, 22, 26)
+        };
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(9), fill);
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(9),
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(248, 113, 113, 64)),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(14.0),
+            Color32::from_rgb(252, 165, 165),
+        );
+    }
+    resp.clicked()
+}
+
+fn console_card(ui: &mut egui::Ui, width: f32, body: impl FnOnce(&mut egui::Ui, f32)) {
+    egui::Frame::NONE
+        .fill(Color32::from_rgb(26, 29, 38))
+        .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18)))
+        .corner_radius(egui::CornerRadius::same(11))
+        .inner_margin(egui::Margin::same(18))
+        .show(ui, |ui| {
+            let cw = (width - 38.0).max(160.0);
+            ui.set_min_width(cw);
+            ui.set_max_width(cw);
+            body(ui, cw);
+        });
+}
+
+fn console_segmented<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    current: T,
+    options: &[(T, &str)],
+    id_salt: &str,
+) -> Option<T> {
+    let mut picked = None;
+    let (outer_rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    if ui.is_rect_visible(outer_rect) {
+        ui.painter().rect_filled(outer_rect, egui::CornerRadius::same(9), Color32::from_rgb(14, 16, 21));
+        ui.painter().rect_stroke(
+            outer_rect,
+            egui::CornerRadius::same(9),
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let pad = 4.0;
+    let inner = outer_rect.shrink(pad);
+    let n = options.len().max(1) as f32;
+    let gap = 4.0;
+    let item_w = ((inner.width() - gap * (n - 1.0)) / n).max(12.0);
+
+    for (idx, &(val, label)) in options.iter().enumerate() {
+        let x0 = inner.left() + (idx as f32) * (item_w + gap);
+        let item_rect = egui::Rect::from_min_size(egui::pos2(x0, inner.top()), Vec2::new(item_w, inner.height()));
+        let resp = ui.interact(item_rect, ui.make_persistent_id((id_salt, idx)), egui::Sense::click());
+        let selected = val == current;
+        if ui.is_rect_visible(item_rect) {
+            if selected {
+                ui.painter().rect_filled(item_rect, egui::CornerRadius::same(6), Color32::from_rgb(37, 99, 235));
+            } else if resp.hovered() {
+                ui.painter().rect_filled(item_rect, egui::CornerRadius::same(6), Color32::from_rgb(28, 32, 42));
+            }
+            let col = if selected || resp.hovered() {
+                Color32::WHITE
+            } else {
+                Color32::from_rgb(172, 180, 194)
+            };
+            ui.painter().text(
+                item_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(13.5),
+                col,
+            );
+        }
+        if resp.clicked() && !selected {
+            picked = Some(val);
+        }
+    }
+    picked
+}
+
+fn console_toggle_row(ui: &mut egui::Ui, width: f32, title: &str, subtitle: &str, value: &mut bool) -> bool {
+    let row_h = if subtitle.is_empty() { 34.0 } else { 46.0 };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, row_h), egui::Sense::click());
+    let mut changed = false;
+    if resp.clicked() {
+        *value = !*value;
+        changed = true;
+    }
+    if ui.is_rect_visible(rect) {
+        let switch_w = 46.0;
+        let switch_h = 26.0;
+        let switch_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - switch_w, rect.center().y - switch_h * 0.5),
+            Vec2::new(switch_w, switch_h),
+        );
+        let track = if *value {
+            Color32::from_rgb(37, 99, 235)
+        } else if resp.hovered() {
+            Color32::from_rgb(56, 62, 76)
+        } else {
+            Color32::from_rgb(42, 47, 58)
+        };
+        ui.painter().rect_filled(switch_rect, egui::CornerRadius::same(13), track);
+        let knob_x = if *value { switch_rect.right() - 13.0 } else { switch_rect.left() + 13.0 };
+        ui.painter().circle_filled(egui::pos2(knob_x, switch_rect.center().y), 9.5, Color32::WHITE);
+
+        let text_clip = egui::Rect::from_min_max(rect.min, egui::pos2(switch_rect.left() - 14.0, rect.bottom()));
+        let tp = ui.painter().with_clip_rect(text_clip);
+        if subtitle.is_empty() {
+            tp.text(
+                egui::pos2(rect.left(), rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                title,
+                egui::FontId::proportional(14.5),
+                Color32::from_rgb(240, 242, 246),
+            );
+        } else {
+            tp.text(
+                egui::pos2(rect.left(), rect.top() + 12.0),
+                egui::Align2::LEFT_CENTER,
+                title,
+                egui::FontId::proportional(14.5),
+                Color32::from_rgb(240, 242, 246),
+            );
+            tp.text(
+                egui::pos2(rect.left(), rect.top() + 33.0),
+                egui::Align2::LEFT_CENTER,
+                subtitle,
+                egui::FontId::proportional(12.5),
+                Color32::from_rgb(142, 150, 166),
+            );
+        }
+    }
+    changed
+}
+
+fn console_binding_row(ui: &mut egui::Ui, width: f32, label: &str, badge: &str, active: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 36.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(6), Color32::from_rgb(32, 36, 46));
+        }
+        ui.painter().text(
+            egui::pos2(rect.left() + 6.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(14.0),
+            Color32::from_rgb(228, 232, 240),
+        );
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - 134.0, rect.center().y - 14.0),
+            Vec2::new(130.0, 28.0),
+        );
+        let fill = if active {
+            Color32::from_rgb(37, 99, 235)
+        } else {
+            Color32::from_rgb(16, 19, 25)
+        };
+        ui.painter().rect_filled(badge_rect, egui::CornerRadius::same(6), fill);
+        ui.painter().rect_stroke(
+            badge_rect,
+            egui::CornerRadius::same(6),
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18)),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            badge,
+            egui::FontId::monospace(13.0),
+            Color32::WHITE,
+        );
+    }
+    resp.clicked()
+}
+
+fn console_screen_layout_card(
+    ui: &mut egui::Ui,
+    size: Vec2,
+    title: &str,
+    subtitle: &str,
+    kind: u8,
+    selected: bool,
+) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let bg = if selected {
+            Color32::from_rgb(26, 36, 56)
+        } else if resp.hovered() {
+            Color32::from_rgb(33, 38, 49)
+        } else {
+            Color32::from_rgb(26, 29, 38)
+        };
+        let border = if selected {
+            egui::Stroke::new(1.5, Color32::from_rgb(59, 130, 246))
+        } else if resp.hovered() {
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 42))
+        } else {
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18))
+        };
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(10), bg);
+        ui.painter().rect_stroke(rect, egui::CornerRadius::same(10), border, egui::StrokeKind::Inside);
+
+        // Icône géométrique dans les 68 premiers pixels à gauche de la carte horizontale
+        let cx = rect.left() + 36.0;
+        let cy = rect.center().y;
+        let top_fill = if selected {
+            Color32::from_rgb(96, 165, 250)
+        } else {
+            Color32::from_rgb(138, 148, 168)
+        };
+        let bot_fill = if selected {
+            Color32::from_rgba_unmultiplied(96, 165, 250, 165)
+        } else {
+            Color32::from_rgba_unmultiplied(138, 148, 168, 145)
+        };
+
+        match kind {
+            0 => {
+                let r_top = egui::Rect::from_center_size(egui::pos2(cx, cy - 10.0), Vec2::new(34.0, 17.0));
+                let r_bot = egui::Rect::from_center_size(egui::pos2(cx, cy + 10.0), Vec2::new(26.0, 15.0));
+                ui.painter().rect_filled(r_top, egui::CornerRadius::same(3), top_fill);
+                ui.painter().rect_filled(r_bot, egui::CornerRadius::same(3), bot_fill);
+            }
+            1 => {
+                let r_top = egui::Rect::from_center_size(egui::pos2(cx - 8.0, cy), Vec2::new(32.0, 22.0));
+                let r_bot = egui::Rect::from_center_size(egui::pos2(cx + 16.0, cy + 5.0), Vec2::new(14.0, 12.0));
+                ui.painter().rect_filled(r_top, egui::CornerRadius::same(3), top_fill);
+                ui.painter().rect_filled(r_bot, egui::CornerRadius::same(2), bot_fill);
+            }
+            2 => {
+                let r_top = egui::Rect::from_center_size(egui::pos2(cx - 12.0, cy), Vec2::new(24.0, 16.0));
+                let r_bot = egui::Rect::from_center_size(egui::pos2(cx + 13.0, cy), Vec2::new(20.0, 16.0));
+                ui.painter().rect_filled(r_top, egui::CornerRadius::same(3), top_fill);
+                ui.painter().rect_filled(r_bot, egui::CornerRadius::same(3), bot_fill);
+            }
+            _ => {
+                let w1 = egui::Rect::from_center_size(egui::pos2(cx - 8.0, cy - 5.0), Vec2::new(30.0, 19.0));
+                let w2 = egui::Rect::from_center_size(egui::pos2(cx + 10.0, cy + 6.0), Vec2::new(24.0, 17.0));
+                ui.painter().rect_filled(w1, egui::CornerRadius::same(3), top_fill);
+                ui.painter().rect_filled(w2.expand(2.0), egui::CornerRadius::same(4), bg);
+                ui.painter().rect_filled(w2, egui::CornerRadius::same(3), bot_fill);
+            }
+        }
+
+        let text_clip = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 72.0, rect.top() + 4.0),
+            egui::pos2(rect.right() - 10.0, rect.bottom() - 4.0),
+        );
+        let tp = ui.painter().with_clip_rect(text_clip);
+        tp.text(
+            egui::pos2(rect.left() + 72.0, rect.center().y - 9.0),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(14.5),
+            Color32::WHITE,
+        );
+        tp.text(
+            egui::pos2(rect.left() + 72.0, rect.center().y + 11.0),
+            egui::Align2::LEFT_CENTER,
+            subtitle,
+            egui::FontId::proportional(12.0),
+            Color32::from_rgb(142, 150, 166),
+        );
+    }
+    resp.clicked()
+}
+"#;
 
 const UPSCALE_HELPERS_RS: &str = r#"
 #[inline]
