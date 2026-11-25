@@ -76,12 +76,12 @@ fn patch_zakuro_oras_enhancements(zakuro_repo: &Path) -> Result<(), String> {
 
     let target = "= 000400000011C500 Pokémon Alpha Sapphire (USA)\n60 FPS | rev3 | Reshiban | The whole game runs twice as fast with it.\n28C650C1 00000000";
     let updated = "= 000400000011C500 Pokémon Alpha Sapphire (USA)\n\
-No Outlines (HD) | rev3 | BlueOrb | Retire les traits noirs autour des personnages et Pokémon pour un rendu HD net.\n\
+No Outlines (HD) | rev3 | BlueOrb | Removes black cel-shading outlines around 3D models for clean HD rendering.\n\
 D3000000 00000000\n\
 00379EB4 00000000\n\
 00379EB8 00000000\n\
 D2000000 00000000\n\
-60 FPS | rev3 | Reshiban | Mode vitesse rapide x2.\n\
+60 FPS | rev3 | Reshiban | Runs game logic at 2x speed.\n\
 28C650C1 00000000";
 
     if src.contains(target) {
@@ -452,9 +452,58 @@ pub fn top_aspect_scale() -> f32 {
 
 /// 4. Assistant Premier Lancement ultra-intuitif + Interface Console Large + Double Fenêtre
 fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Path) -> Result<(), String> {
-    let zakuro_src = zakuro_repo.join("crates").join("zakuro").join("src");
+    let zakuro_crate = zakuro_repo.join("crates").join("zakuro");
+    let zakuro_src = zakuro_crate.join("src");
 
-    // 4a. `main.rs` : pas de fenêtre console noire sur Windows !
+    // 4a-bis. `build.rs` : embed AppIcon.ico into BlueOrb.exe on Windows MSVC when llvm-rc / rc is available
+    let build_rs = zakuro_crate.join("build.rs");
+    if build_rs.exists() {
+        let src = read_lf(&build_rs).map_err(|e| e.to_string())?;
+        if !src.contains("BLUEORB_WIN_ICON") {
+            let win_icon_hook = r#"
+    // BLUEORB_WIN_ICON
+    if windows && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
+        let ico = manifest_dir.join("AppIcon.ico");
+        println!("cargo:rerun-if-changed={}", ico.display());
+        if ico.is_file() {
+            if let Ok(out_dir) = std::env::var("OUT_DIR") {
+                let out = std::path::PathBuf::from(out_dir);
+                let rc_file = out.join("blueorb_icon.rc");
+                let res_file = out.join("blueorb_icon.res");
+                let ico_escaped = ico.display().to_string().replace('\\', "/");
+                let _ = std::fs::write(&rc_file, format!("1 ICON \"{ico_escaped}\"\n"));
+                let compiled = std::process::Command::new("llvm-rc")
+                    .args(["/FO"])
+                    .arg(&res_file)
+                    .arg(&rc_file)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+                    || std::process::Command::new("rc")
+                        .args(["/nologo", "/fo"])
+                        .arg(&res_file)
+                        .arg(&rc_file)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                if compiled && res_file.is_file() {
+                    println!("cargo:rustc-link-arg-bins={}", res_file.display());
+                }
+            }
+        }
+    }
+}"#;
+            if let Some(last_brace) = src.rfind('}') {
+                let mut patched = src[..last_brace].to_string();
+                patched.push_str(win_icon_hook);
+                patched.push('\n');
+                fs::write(&build_rs, patched).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    // 4a. `main.rs` : no black console window on Windows
     let main_rs = zakuro_src.join("main.rs");
     if main_rs.exists() {
         let src = read_lf(&main_rs).map_err(|e| e.to_string())?;
@@ -507,7 +556,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "            games: None,\n            language: Language::English,\n            renderer: Renderer::Vulkan,\n            hardware_rasterizer: true,\n            resolution: 3,",
-                "            games: None,\n            blueorb_rom: None,\n            language: Language::French,\n            renderer: Renderer::Vulkan,\n            hardware_rasterizer: true,\n            resolution: 5,",
+                "            games: None,\n            blueorb_rom: None,\n            language: Language::English,\n            renderer: Renderer::Vulkan,\n            hardware_rasterizer: true,\n            resolution: 5,",
             );
             src = src.replace(
                 "            filter: Filter::Smooth,",
@@ -529,7 +578,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "Screens::LargeTop => \"Big top screen, small bottom one\",",
-                "Screens::LargeTop => \"Big top screen, small bottom one\",\n            Screens::SeparateWindows => \"Deux fenêtres séparées\",",
+                "Screens::LargeTop => \"Big top screen, small bottom one\",\n            Screens::SeparateWindows => \"Separate windows\",",
             );
             src = src.replace(
                 "Screens::LargeTop => ScreenLayout::LargeTop,",
@@ -547,7 +596,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "TopShape::Wide21x9 => \"21:9\",",
-                "TopShape::Wide21x9 => \"21:9 Ultra-Wide\",\n            TopShape::Wide32x9 => \"32:9 Super Large\",",
+                "TopShape::Wide21x9 => \"21:9 Ultrawide\",\n            TopShape::Wide32x9 => \"32:9 Super Ultrawide\",",
             );
             src = src.replace(
                 "TopShape::Wide21x9 => 560.0,",
@@ -799,7 +848,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             Ok(t) => t,
             Err(err) => {
                 self.menus.message = Some(format!(
-                    "Impossible d'ouvrir ce fichier ({err}).\n\nVérifiez qu'il s'agit bien d'un fichier de jeu Nintendo 3DS décrypté (.3ds ou .cci)."
+                    "Could not open ROM ({err}).\n\nPlease select a decrypted Nintendo 3DS ROM (.3ds, .cci, or .cxi)."
                 ));
                 return;
             }
@@ -811,7 +860,6 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 self.settings.games = Some(parent.to_path_buf());
             }
         }
-        // Activer par défaut le mode Sans traits noirs (HD) pour Saphir Alpha / Rubis Oméga
         let tid_hex = format!("{program_id:016X}");
         if (program_id == 0x0004_0000_0011_C500 || program_id == 0x0004_0000_0011_C400)
             && !self.settings.enhancements.contains_key(&tid_hex)
@@ -824,15 +872,41 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             || zakuro_core::recompiled::installed(program_id).is_some();
 
         if already_recompiled {
+            self.apply_official_rom_icon(&path);
             if let Err(error) = self.play(&path) {
                 self.menus.message = Some(error);
             }
         } else {
             self.menus.menu_open = false;
             self.game = None;
-            // `download = true` télécharge automatiquement Zig en arrière-plan si aucun compilateur C n'est présent sur l'ordinateur !
             self.recompile(vec![Wanted { program_id, path }], true);
         }
+    }
+
+    fn apply_official_rom_icon(&self, rom_path: &Path) {
+        let Ok(title) = zakuro_fs::Title::load(rom_path) else { return };
+        let Some(smdh) = title.exefs_file("icon").and_then(library::Smdh::parse) else { return };
+        if smdh.icon.len() != 48 * 48 * 4 {
+            return;
+        }
+        let rgba64 = blueorb_upscale_smdh_rgba(&smdh.icon, 64);
+        if let Ok(win_icon) = winit::window::Icon::from_rgba(rgba64, 64, 64) {
+            if let Some(w) = &self.window {
+                w.set_window_icon(Some(win_icon.clone()));
+            }
+            if let Some(bw) = &self.bottom_window {
+                bw.set_window_icon(Some(win_icon));
+            }
+        }
+        let icon48 = smdh.icon;
+        let game_title = if smdh.name.is_empty() {
+            "Pokémon Alpha Sapphire".to_owned()
+        } else {
+            smdh.name
+        };
+        std::thread::spawn(move || {
+            blueorb_persist_official_bundle_icon(&icon48, &game_title);
+        });
     }
 
     fn toggle_dual_windows(&mut self) {
@@ -845,9 +919,9 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         self.set_layout(target);
         self.menus.toast = Some((
             if target == Screens::SeparateWindows {
-                "Écrans séparés sur deux fenêtres".to_owned()
+                "Dual Window: On".to_owned()
             } else {
-                "Écrans regroupés dans une fenêtre".to_owned()
+                "Dual Window: Off".to_owned()
             },
             Instant::now(),
         ));
@@ -862,7 +936,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         self.settings.save();
         self.active = self.settings.for_game(self.program_id());
         self.apply_layout();
-        self.menus.toast = Some((format!("Format : {}", shape.name()), Instant::now()));
+        self.menus.toast = Some((format!("Aspect Ratio: {}", shape.name()), Instant::now()));
     }
 
     fn set_layout(&mut self, layout: Screens) {
@@ -871,7 +945,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         }"#;
             src = src.replace(set_layout_needle, set_layout_rep);
 
-            // Permettre à `next_recompile` de compiler directement un fichier `.3ds` unique sans scan de dossier
+            // Allow `next_recompile` to compile a single `.3ds` file directly without folder scanning
             let next_recomp_needle = r#"        if let Some(game) = self.library.games.iter().find(|game| game.path == wanted.path) {
             let update = game.update.as_ref().map(|update| update.path.as_path());
             self.jobs.push(Job::start(&game.path, update, game.program_id, &game.name, self.data_dir.as_deref(), toolchain));
@@ -885,7 +959,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 .path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Pokémon Saphir Alpha".to_owned());
+                .unwrap_or_else(|| "Pokémon Alpha Sapphire".to_owned());
             self.jobs.push(Job::start(
                 &wanted.path,
                 addon_upd.as_deref(),
@@ -897,12 +971,13 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         }"#;
             src = src.replace(next_recomp_needle, next_recomp_rep);
 
-            // Dès que la recompilation initiale se termine (`Stage::Done`), lancer automatiquement le jeu !
+            // As soon as initial recompilation finishes (`Stage::Done`), apply the official Alpha Sapphire icon and auto-launch!
             let poll_done_needle = "                Stage::Done => {\n                    self.library.recompiled(program_id);";
             let poll_done_rep = r#"                Stage::Done => {
                     self.library.recompiled(program_id);
                     if self.game.is_none() {
                         if let Some(rom) = self.settings.blueorb_rom.clone().filter(|p| p.is_file()) {
+                            self.apply_official_rom_icon(&rom);
                             if let Err(error) = self.play(&rom) {
                                 self.menus.message = Some(error);
                             }
@@ -1011,8 +1086,8 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "            Action::Quit => event_loop.exit(),",
                 r#"            Action::PickRomFile => {
                 let picked = rfd::FileDialog::new()
-                    .set_title("Sélectionnez votre fichier Pokémon Saphir Alpha (.3ds)")
-                    .add_filter("Jeu Nintendo 3DS (.3ds, .cci)", &["3ds", "cci", "cxi"])
+                    .set_title("Select Decrypted Nintendo 3DS ROM (.3ds)")
+                    .add_filter("Nintendo 3DS ROM (.3ds, .cci, .cxi)", &["3ds", "cci", "cxi"])
                     .pick_file();
                 if let Some(file) = picked {
                     self.accept_rom_file(file);
@@ -1030,7 +1105,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "Window::default_attributes().with_title(\"Zakuro\")",
-                "Window::default_attributes().with_title(\"BlueOrb\")",
+                "Window::default_attributes().with_title(\"BlueOrb\").with_window_icon(blueorb_initial_window_icon(self.settings.blueorb_rom.as_deref()))",
             );
 
             src = src.replace(
@@ -1053,7 +1128,8 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             let bot_scale = self.scale.clamp(2, 4);
             let bot_size = winit::dpi::LogicalSize::new(320 * bot_scale, 240 * bot_scale);
             let attrs = Window::default_attributes()
-                .with_title("Écran Tactile — PokéMulti-Navi")
+                .with_title("BlueOrb — Touch Screen")
+                .with_window_icon(blueorb_initial_window_icon(self.settings.blueorb_rom.as_deref()))
                 .with_inner_size(bot_size);
             let shared = self.backend.as_ref().and_then(Backend::shared_device);
             match Backend::create_secondary(event_loop, attrs, shared) {
@@ -1113,6 +1189,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         }
     }"#;
             src = src.replace(present_end_needle, present_end_rep);
+            src.push_str(OFFICIAL_ICON_UPDATER_RS);
 
             fs::write(&lib_rs, src).map_err(|e| e.to_string())?;
         }
@@ -1121,7 +1198,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     Ok(())
 }
 
-/// Génère le fichier `settings.toml` (`frame_interpolation = false` par défaut pour zéro clignotement 60 Hz !).
+/// Writes `settings.toml` (`frame_interpolation = false` and `language = "english"` by default).
 pub fn write_remaster_settings_toml(
     settings_path: &Path,
     title_id: &str,
@@ -1147,7 +1224,7 @@ pub fn write_remaster_settings_toml(
         3 => "german",
         4 => "italian",
         5 => "spanish",
-        _ => "french",
+        _ => "english",
     };
 
     let layout_str = if dual_windows {
@@ -1207,76 +1284,75 @@ fn apply_blueorb_console_theme(ctx: &egui::Context) {
     use egui::{Color32, CornerRadius, CursorIcon, FontFamily, FontId, Shadow, Stroke, TextStyle, Theme};
     ctx.set_theme(Theme::Dark);
     ctx.all_styles_mut(|style| {
-        style.text_styles.insert(TextStyle::Small, FontId::new(12.5, FontFamily::Proportional));
-        style.text_styles.insert(TextStyle::Body, FontId::new(15.0, FontFamily::Proportional));
-        style.text_styles.insert(TextStyle::Button, FontId::new(14.5, FontFamily::Proportional));
-        style.text_styles.insert(TextStyle::Heading, FontId::new(20.0, FontFamily::Proportional));
-        style.text_styles.insert(TextStyle::Monospace, FontId::new(13.5, FontFamily::Monospace));
+        style.text_styles.insert(TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Body, FontId::new(13.5, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Heading, FontId::new(17.5, FontFamily::Proportional));
+        style.text_styles.insert(TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace));
 
-        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-        style.spacing.button_padding = egui::vec2(14.0, 8.0);
-        style.spacing.window_margin = egui::Margin::same(18);
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(12.0, 6.0);
+        style.spacing.window_margin = egui::Margin::same(14);
 
         let v = &mut style.visuals;
         v.dark_mode = true;
-        v.window_fill = Color32::from_rgb(20, 22, 28);
-        v.panel_fill = Color32::from_rgb(20, 22, 28);
-        v.faint_bg_color = Color32::from_rgb(28, 31, 39);
-        v.extreme_bg_color = Color32::from_rgb(13, 15, 19);
-        v.code_bg_color = Color32::from_rgb(15, 17, 22);
-        v.window_corner_radius = CornerRadius::same(12);
-        v.menu_corner_radius = CornerRadius::same(8);
-        v.window_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 22));
+        v.window_fill = Color32::from_rgb(24, 24, 27);
+        v.panel_fill = Color32::from_rgb(24, 24, 27);
+        v.faint_bg_color = Color32::from_rgb(31, 31, 35);
+        v.extreme_bg_color = Color32::from_rgb(17, 17, 20);
+        v.code_bg_color = Color32::from_rgb(17, 17, 20);
+        v.window_corner_radius = CornerRadius::same(5);
+        v.menu_corner_radius = CornerRadius::same(4);
+        v.window_stroke = Stroke::new(1.0, Color32::from_rgb(54, 54, 61));
         v.window_shadow = Shadow {
-            offset: [0, 14],
-            blur: 36,
-            spread: 2,
-            color: Color32::from_black_alpha(175),
-        };
-        v.popup_shadow = Shadow {
             offset: [0, 8],
             blur: 20,
             spread: 0,
-            color: Color32::from_black_alpha(145),
+            color: Color32::from_black_alpha(140),
+        };
+        v.popup_shadow = Shadow {
+            offset: [0, 4],
+            blur: 12,
+            spread: 0,
+            color: Color32::from_black_alpha(120),
         };
         v.slider_trailing_fill = true;
         v.interact_cursor = Some(CursorIcon::PointingHand);
-        v.selection.bg_fill = Color32::from_rgb(37, 99, 235);
+        v.selection.bg_fill = Color32::from_rgb(56, 98, 154);
         v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
 
-        v.widgets.noninteractive.bg_fill = Color32::from_rgb(26, 29, 36);
-        v.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(26, 29, 36);
-        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16));
-        v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(235, 238, 244));
-        v.widgets.noninteractive.corner_radius = CornerRadius::same(8);
+        v.widgets.noninteractive.bg_fill = Color32::from_rgb(30, 30, 34);
+        v.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(30, 30, 34);
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(50, 50, 57));
+        v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(228, 228, 232));
+        v.widgets.noninteractive.corner_radius = CornerRadius::same(4);
 
-        v.widgets.inactive.bg_fill = Color32::from_rgb(32, 36, 45);
-        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(32, 36, 45);
-        v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 14));
-        v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(235, 238, 244));
-        v.widgets.inactive.corner_radius = CornerRadius::same(8);
+        v.widgets.inactive.bg_fill = Color32::from_rgb(38, 38, 43);
+        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(38, 38, 43);
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(60, 60, 68));
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(228, 228, 232));
+        v.widgets.inactive.corner_radius = CornerRadius::same(4);
 
-        v.widgets.hovered.bg_fill = Color32::from_rgb(44, 50, 62);
-        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(44, 50, 62);
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 36));
-        v.widgets.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
-        v.widgets.hovered.corner_radius = CornerRadius::same(8);
+        v.widgets.hovered.bg_fill = Color32::from_rgb(48, 48, 55);
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(48, 48, 55);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(82, 82, 92));
+        v.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+        v.widgets.hovered.corner_radius = CornerRadius::same(4);
 
-        v.widgets.active.bg_fill = Color32::from_rgb(37, 99, 235);
-        v.widgets.active.weak_bg_fill = Color32::from_rgb(37, 99, 235);
-        v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(96, 165, 250));
-        v.widgets.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
-        v.widgets.active.corner_radius = CornerRadius::same(8);
+        v.widgets.active.bg_fill = Color32::from_rgb(56, 98, 154);
+        v.widgets.active.weak_bg_fill = Color32::from_rgb(56, 98, 154);
+        v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(88, 134, 196));
+        v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+        v.widgets.active.corner_radius = CornerRadius::same(4);
 
         v.widgets.open = v.widgets.hovered;
     });
 }
 "#;
 
-const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Assistant d'accueil ultra-simple au premier lancement :
-    /// 1. Demande où est le fichier `.3ds` (clic ou glisser-déposer)
-    /// 2. Recompile automatiquement le jeu (en téléchargeant Zig tout seul si besoin)
-    /// 3. Lance le jeu dès que c'est prêt (et directement à chaque ouverture suivante !)
+const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desktop launcher:
+    /// - First launch: drop or select a decrypted .3ds ROM -> automatic native AOT build -> launches straight into the game
+    /// - Subsequent launches: boots directly into the game
     pub fn library(&mut self, ui: &mut egui::Ui, library: &Library, settings: &Settings, jobs: &[Job], waiting: &[Wanted]) -> Vec<Action> {
         let mut actions = Vec::new();
         let _ = (
@@ -1292,133 +1368,191 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Assistant d'accueil ultra-simp
             Stage::Failed(err) if err != "cancelled" => Some((j.program_id, err)),
             _ => None,
         });
+        let hovering_file = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
 
-        let panel_frame = egui::Frame::NONE
-            .fill(Color32::from_rgb(16, 18, 24))
-            .inner_margin(egui::Margin::symmetric(28, 28));
+        // Top toolbar
+        egui::Panel::top("blueorb_launcher_topbar")
+            .resizable(false)
+            .exact_size(38.0)
+            .show_separator_line(true)
+            .frame(egui::Frame::NONE.fill(Color32::from_rgb(19, 19, 22)).inner_margin(egui::Margin::symmetric(14, 6)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), egui::Sense::hover());
+                    paint_diveball_emblem(ui.painter(), icon_rect.center(), 8.5);
+                    ui.label(RichText::new("BlueOrb").size(13.5).strong().color(Color32::from_rgb(236, 236, 240)));
+                    ui.label(RichText::new("·  Static AOT Recompiler").size(12.0).color(Color32::from_rgb(128, 128, 138)));
 
-        egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| {
-            let avail_w = ui.available_width();
-            let avail_h = ui.available_height();
-            let card_w = (avail_w - 16.0).clamp(280.0, 560.0);
-            let top_pad = ((avail_h - 360.0) * 0.42).max(8.0);
-
-            ui.vertical_centered(|ui| {
-                ui.add_space(top_pad);
-
-                console_card(ui, card_w, |ui, cw| {
-                    if let Some(job) = active_job {
-                        ui.ctx().request_repaint();
-                        ui.label(
-                            RichText::new("Installation de votre jeu en cours…")
-                                .size(21.0)
-                                .strong()
-                                .color(Color32::WHITE),
-                        );
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new("BlueOrb convertit votre cartouche en application native pour votre ordinateur. Cette opération ne se fait qu'une seule fois.")
-                                .size(13.5)
-                                .color(Color32::from_rgb(154, 162, 178)),
-                        );
-                        ui.add_space(18.0);
-
-                        let stage = job.stage();
-                        let step_txt = match &stage {
-                            Stage::Downloading(p) => format!("Téléchargement automatique des outils ({:.0}%)…", p * 100.0),
-                            Stage::Generating => "Analyse de la ROM et extraction des fonctions…".to_owned(),
-                            Stage::Compiling { done, total } => format!("Optimisation native pour votre processeur ({done} / {total})…"),
-                            Stage::Installing => "Finalisation de l'application…".to_owned(),
-                            Stage::Done => "Terminé ! Lancement du jeu…".to_owned(),
-                            Stage::Failed(e) => format!("Erreur : {e}"),
-                        };
-
-                        ui.label(RichText::new(step_txt).size(14.5).strong().color(Color32::from_rgb(230, 236, 246)));
-                        ui.add_space(8.0);
-
-                        let mins = job.elapsed().as_secs() / 60;
-                        let secs = job.elapsed().as_secs() % 60;
-                        ui.add(
-                            egui::ProgressBar::new(stage.fraction())
-                                .desired_width(cw)
-                                .desired_height(22.0)
-                                .animate(true)
-                                .text(format!("{:.0}%  ·  {mins}:{secs:02}", stage.fraction() * 100.0)),
-                        );
-
-                        ui.add_space(14.0);
-                        ui.label(
-                            RichText::new("Le jeu démarrera automatiquement dès que la barre atteindra 100%. Aux prochains lancements, il s'ouvrira instantanément.")
-                                .size(12.5)
-                                .color(Color32::from_rgb(136, 144, 160)),
-                        );
-                        ui.add_space(14.0);
-                        if console_secondary_button(ui, 150.0, 36.0, "Annuler", true) {
-                            actions.push(Action::CancelRecompile(job.program_id));
-                        }
-                    } else {
-                        ui.label(
-                            RichText::new("Bienvenue sur BlueOrb")
-                                .size(23.0)
-                                .strong()
-                                .color(Color32::WHITE),
-                        );
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new("Pour lancer Pokémon Saphir Alpha en version PC / Mac native, indiquez simplement où se trouve votre fichier de jeu .3ds décrypté.")
-                                .size(14.0)
-                                .color(Color32::from_rgb(160, 168, 184)),
-                        );
-
-                        ui.add_space(18.0);
-
-                        // Étapes simples et rassurantes
-                        egui::Frame::NONE
-                            .fill(Color32::from_rgb(18, 21, 28))
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 14)))
-                            .corner_radius(egui::CornerRadius::same(9))
-                            .inner_margin(egui::Margin::same(14))
-                            .show(ui, |ui| {
-                                ui.set_width((cw - 28.0).max(160.0));
-                                ui.label(RichText::new("1.  Cliquez sur le bouton ci-dessous (ou glissez votre fichier .3ds ici).").size(13.5).color(Color32::from_rgb(222, 228, 238)));
-                                ui.add_space(4.0);
-                                ui.label(RichText::new("2.  BlueOrb installe et optimise le jeu tout seul (2 à 4 min la 1re fois).").size(13.5).color(Color32::from_rgb(222, 228, 238)));
-                                ui.add_space(4.0);
-                                ui.label(RichText::new("3.  Ensuite, l'application lance directement votre jeu à chaque ouverture !").size(13.5).color(Color32::from_rgb(222, 228, 238)));
-                            });
-
-                        ui.add_space(18.0);
-
-                        if console_primary_button(ui, cw, 48.0, "Choisir mon fichier de jeu (.3ds)…") {
-                            actions.push(Action::PickRomFile);
-                        }
-
-                        if let Some(saved_rom) = settings.blueorb_rom.as_ref().filter(|p| p.is_file()) {
-                            ui.add_space(10.0);
-                            let fname = saved_rom.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                            if console_secondary_button(ui, cw, 42.0, &format!("Lancer {fname}"), true) {
-                                actions.push(Action::Play(saved_rom.clone()));
-                            }
-                        }
-
-                        if let Some((_, err)) = failed_job {
-                            ui.add_space(12.0);
-                            ui.label(
-                                RichText::new(format!("Dernière erreur : {err}"))
-                                    .size(13.0)
-                                    .color(Color32::from_rgb(252, 165, 165)),
-                            );
-                        }
+                    let rem = (ui.available_width() - 96.0).max(0.0);
+                    ui.add_space(rem);
+                    if console_secondary_button(ui, 96.0, 25.0, "Open ROM…", active_job.is_none()) {
+                        actions.push(Action::PickRomFile);
                     }
                 });
             });
+
+        // Bottom status bar
+        let status_left = if let Some(job) = active_job {
+            match job.stage() {
+                Stage::Downloading(p) => format!("Downloading Zig C compiler ({:.0}%)", p * 100.0),
+                Stage::Generating => "Translating ARM11 / CRO code to C...".to_owned(),
+                Stage::Compiling { done, total } => format!("Compiling object files ({done}/{total})"),
+                Stage::Installing => "Linking native library...".to_owned(),
+                Stage::Done => "Launching...".to_owned(),
+                Stage::Failed(e) => format!("Build failed: {e}"),
+            }
+        } else if let Some((_, ref err)) = failed_job {
+            format!("Error: {err}")
+        } else if let Some(rom) = settings.blueorb_rom.as_ref().filter(|p| p.is_file()) {
+            rom.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "ROM ready".to_owned())
+        } else {
+            "Waiting for .3ds ROM".to_owned()
+        };
+
+        egui::Panel::bottom("blueorb_launcher_statusbar")
+            .resizable(false)
+            .exact_size(24.0)
+            .show_separator_line(true)
+            .frame(egui::Frame::NONE.fill(Color32::from_rgb(17, 17, 20)).inner_margin(egui::Margin::symmetric(14, 3)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&status_left).size(11.5).monospace().color(Color32::from_rgb(146, 146, 156)));
+                    let right_lbl = format!("{}  ·  Vulkan", std::env::consts::ARCH);
+                    let rem = (ui.available_width() - 120.0).max(0.0);
+                    ui.add_space(rem);
+                    ui.label(RichText::new(right_lbl).size(11.5).monospace().color(Color32::from_rgb(112, 112, 122)));
+                });
+            });
+
+        // Main workspace
+        let ws_frame = egui::Frame::NONE
+            .fill(Color32::from_rgb(24, 24, 27))
+            .inner_margin(egui::Margin::symmetric(24, 20));
+
+        egui::CentralPanel::default().frame(ws_frame).show(ui, |ui| {
+            let avail_w = ui.available_width();
+            let avail_h = ui.available_height();
+            let box_w = (avail_w - 8.0).clamp(260.0, 460.0);
+
+            if let Some(job) = active_job {
+                ui.ctx().request_repaint();
+                let top_pad = ((avail_h - 150.0) * 0.45).max(8.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(top_pad);
+                    console_card(ui, box_w, |ui, cw| {
+                        let stage = job.stage();
+                        let mins = job.elapsed().as_secs() / 60;
+                        let secs = job.elapsed().as_secs() % 60;
+
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&job.name).size(14.0).strong().color(Color32::from_rgb(236, 236, 240)));
+                            let rem = (ui.available_width() - 48.0).max(0.0);
+                            ui.add_space(rem);
+                            ui.label(RichText::new(format!("{mins:02}:{secs:02}")).size(12.0).monospace().color(Color32::from_rgb(146, 146, 156)));
+                        });
+
+                        ui.add_space(8.0);
+                        let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(cw, 6.0), egui::Sense::hover());
+                        if ui.is_rect_visible(bar_rect) {
+                            ui.painter().rect_filled(bar_rect, egui::CornerRadius::same(2), Color32::from_rgb(17, 17, 20));
+                            let fill_w = (cw * stage.fraction().clamp(0.0, 1.0)).max(2.0);
+                            let fill_rect = egui::Rect::from_min_size(bar_rect.min, Vec2::new(fill_w, bar_rect.height()));
+                            ui.painter().rect_filled(fill_rect, egui::CornerRadius::same(2), Color32::from_rgb(72, 126, 198));
+                        }
+
+                        ui.add_space(10.0);
+                        let step_txt = match &stage {
+                            Stage::Downloading(p) => format!("Downloading portable C toolchain ({:.0}%)", p * 100.0),
+                            Stage::Generating => "Generating C from ARM11 & CRO modules".to_owned(),
+                            Stage::Compiling { done, total } => format!("Compiling C units ({done} / {total})"),
+                            Stage::Installing => "Linking shared library".to_owned(),
+                            Stage::Done => "Starting game...".to_owned(),
+                            Stage::Failed(e) => format!("Failed: {e}"),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(step_txt).size(12.0).monospace().color(Color32::from_rgb(164, 164, 174)));
+                            let rem = (ui.available_width() - 78.0).max(0.0);
+                            ui.add_space(rem);
+                            if console_secondary_button(ui, 76.0, 26.0, "Cancel", true) {
+                                actions.push(Action::CancelRecompile(job.program_id));
+                            }
+                        });
+                    });
+                });
+            } else {
+                let top_pad = ((avail_h - 210.0) * 0.44).max(8.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(top_pad);
+
+                    let border = if hovering_file {
+                        egui::Stroke::new(1.5, Color32::from_rgb(82, 134, 204))
+                    } else {
+                        egui::Stroke::new(1.0, Color32::from_rgb(52, 52, 60))
+                    };
+                    let fill = if hovering_file {
+                        Color32::from_rgb(28, 33, 42)
+                    } else {
+                        Color32::from_rgb(29, 29, 33)
+                    };
+
+                    egui::Frame::NONE
+                        .fill(fill)
+                        .stroke(border)
+                        .corner_radius(egui::CornerRadius::same(5))
+                        .inner_margin(egui::Margin::symmetric(24, 24))
+                        .show(ui, |ui| {
+                            let cw = (box_w - 50.0).max(180.0);
+                            ui.set_min_width(cw);
+                            ui.set_max_width(cw);
+
+                            ui.vertical_centered(|ui| {
+                                let (emb_rect, _) = ui.allocate_exact_size(Vec2::new(44.0, 44.0), egui::Sense::hover());
+                                paint_diveball_emblem(ui.painter(), emb_rect.center(), 20.0);
+
+                                ui.add_space(8.0);
+                                if let Some(saved_rom) = settings.blueorb_rom.as_ref().filter(|p| p.is_file()) {
+                                    let fname = saved_rom.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                    ui.label(RichText::new(&fname).size(13.5).strong().color(Color32::from_rgb(236, 236, 240)));
+                                    ui.add_space(12.0);
+                                    ui.horizontal(|ui| {
+                                        let pad_l = ((cw - 218.0) * 0.5).max(0.0);
+                                        ui.add_space(pad_l);
+                                        if console_primary_button(ui, 104.0, 30.0, "Launch") {
+                                            actions.push(Action::Play(saved_rom.clone()));
+                                        }
+                                        if console_secondary_button(ui, 104.0, 30.0, "Change ROM…", true) {
+                                            actions.push(Action::PickRomFile);
+                                        }
+                                    });
+                                } else {
+                                    ui.label(RichText::new("No ROM Loaded").size(14.5).strong().color(Color32::from_rgb(232, 232, 238)));
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        RichText::new("Drop a decrypted .3ds / .cci file here or select one from disk.")
+                                            .size(12.5)
+                                            .color(Color32::from_rgb(142, 142, 152)),
+                                    );
+                                    ui.add_space(14.0);
+                                    if console_secondary_button(ui, 140.0, 32.0, "Select ROM…", true) {
+                                        actions.push(Action::PickRomFile);
+                                    }
+                                }
+
+                                if let Some((_, ref err)) = failed_job {
+                                    ui.add_space(10.0);
+                                    ui.label(RichText::new(err).size(12.0).color(Color32::from_rgb(238, 128, 128)));
+                                }
+                            });
+                        });
+                });
+            }
         });
         actions
     }
 
 "#;
 
-const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Menu Pause accessible et clair pour tous les joueurs
+const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Clean native desktop pause overlay (English by default)
     #[allow(clippy::too_many_arguments)]
     pub fn game(
         &mut self,
@@ -1442,21 +1576,21 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
 
         let hud_frame = || {
             egui::Frame::NONE
-                .fill(Color32::from_rgba_unmultiplied(15, 17, 22, 224))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))
-                .corner_radius(egui::CornerRadius::same(8))
-                .inner_margin(egui::Margin::symmetric(12, 7))
+                .fill(Color32::from_rgba_unmultiplied(17, 17, 20, 224))
+                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(54, 54, 62)))
+                .corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(10, 5))
         };
 
         if let Some((text, since)) = &self.toast {
-            if since.elapsed() < std::time::Duration::from_millis(2400) {
+            if since.elapsed() < std::time::Duration::from_millis(2200) {
                 egui::Area::new(egui::Id::new("toast"))
                     .order(egui::Order::Foreground)
-                    .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 14.0))
+                    .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 12.0))
                     .interactable(false)
                     .show(&ctx, |ui| {
                         hud_frame().show(ui, |ui| {
-                            ui.label(RichText::new(text).size(14.0).color(Color32::from_rgb(240, 242, 246)));
+                            ui.label(RichText::new(text).size(13.0).color(Color32::from_rgb(236, 236, 240)));
                         });
                     });
                 ctx.request_repaint();
@@ -1467,22 +1601,22 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
         if fast && !self.menu_open {
             egui::Area::new(egui::Id::new("fast forward"))
                 .order(egui::Order::Foreground)
-                .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-12.0, 12.0))
+                .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-10.0, 10.0))
                 .interactable(false)
                 .show(&ctx, |ui| {
                     hud_frame().show(ui, |ui| {
-                        ui.label(RichText::new("Avance rapide").size(13.0).monospace());
+                        ui.label(RichText::new("Fast Forward").size(12.0).monospace());
                     });
                 });
         }
         if let Some(fps) = fps.filter(|_| !self.menu_open) {
             egui::Area::new(egui::Id::new("fps"))
                 .order(egui::Order::Foreground)
-                .fixed_pos(egui::pos2(12.0, 12.0))
+                .fixed_pos(egui::pos2(10.0, 10.0))
                 .interactable(false)
                 .show(&ctx, |ui| {
                     hud_frame().show(ui, |ui| {
-                        ui.label(RichText::new(format!("{fps:.0} FPS")).size(13.0).monospace());
+                        ui.label(RichText::new(format!("{fps:.0} FPS")).size(12.0).monospace());
                     });
                 });
         }
@@ -1491,21 +1625,21 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
         }
 
         let nav_tabs: [(u8, &str); 5] = [
-            (0, "Jeu & Sauvegardes"),
-            (1, "Écrans & Ultra-Wide"),
-            (2, "Qualité & Son"),
-            (3, "Touches & Manette"),
-            (4, "Multijoueur & Bonus"),
+            (0, "Game"),
+            (1, "Display"),
+            (2, "Graphics & Audio"),
+            (3, "Controls"),
+            (4, "System & Cheats"),
         ];
 
         let total_w = ui.available_width();
-        let wide_mode = total_w >= 560.0;
+        let wide_mode = total_w >= 540.0;
 
         if wide_mode {
-            let sidebar_w = 216.0;
+            let sidebar_w = 196.0;
             let sidebar_frame = egui::Frame::NONE
-                .fill(Color32::from_rgba_unmultiplied(13, 15, 20, 248))
-                .inner_margin(egui::Margin::symmetric(16, 22));
+                .fill(Color32::from_rgba_unmultiplied(18, 18, 21, 248))
+                .inner_margin(egui::Margin::symmetric(14, 18));
 
             egui::Panel::left("blueorb_pause_sidebar")
                 .resizable(false)
@@ -1518,27 +1652,27 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     egui::Panel::bottom("blueorb_pause_sidebar_footer")
                         .resizable(false)
                         .show_separator_line(false)
-                        .frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 0, right: 0, top: 10, bottom: 0 }))
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 0, right: 0, top: 8, bottom: 0 }))
                         .show(ui, |ui| {
-                            if console_primary_button(ui, item_w, 42.0, "Reprendre le jeu") {
+                            if console_primary_button(ui, item_w, 34.0, "Resume") {
                                 actions.push(Action::Resume);
                             }
-                            ui.add_space(8.0);
-                            if console_danger_button(ui, item_w, 38.0, "Quitter") {
+                            ui.add_space(6.0);
+                            if console_danger_button(ui, item_w, 32.0, "Quit") {
                                 actions.push(Action::Quit);
                             }
                         });
 
-                    ui.label(RichText::new(name).size(16.5).strong().color(Color32::WHITE));
-                    ui.add_space(2.0);
+                    ui.label(RichText::new(name).size(14.5).strong().color(Color32::from_rgb(236, 236, 240)));
                     ui.label(
-                        RichText::new(if recompiled { "Version PC / Mac Native" } else { "Mode compatibilité" })
-                            .size(12.5)
-                            .color(Color32::from_rgb(132, 140, 156)),
+                        RichText::new(if recompiled { "Native AOT" } else { "Interpreter" })
+                            .size(11.5)
+                            .monospace()
+                            .color(Color32::from_rgb(130, 130, 140)),
                     );
-                    ui.add_space(18.0);
+                    ui.add_space(14.0);
 
-                    ui.spacing_mut().item_spacing.y = 6.0;
+                    ui.spacing_mut().item_spacing.y = 4.0;
                     for (idx, title) in nav_tabs {
                         if console_nav_button(ui, item_w, title, self.tab == idx) {
                             self.tab = idx;
@@ -1547,8 +1681,8 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 });
         } else {
             let top_frame = egui::Frame::NONE
-                .fill(Color32::from_rgba_unmultiplied(13, 15, 20, 248))
-                .inner_margin(egui::Margin::symmetric(12, 10));
+                .fill(Color32::from_rgba_unmultiplied(18, 18, 21, 248))
+                .inner_margin(egui::Margin::symmetric(10, 8));
 
             egui::Panel::top("blueorb_pause_topbar")
                 .resizable(false)
@@ -1560,10 +1694,10 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                             let sel = self.tab == idx;
                             let btn = egui::Button::new(
                                 RichText::new(title)
-                                    .size(13.0)
-                                    .color(if sel { Color32::WHITE } else { Color32::from_rgb(172, 180, 194) }),
+                                    .size(12.5)
+                                    .color(if sel { Color32::WHITE } else { Color32::from_rgb(170, 170, 180) }),
                             )
-                            .fill(if sel { Color32::from_rgb(37, 99, 235) } else { Color32::from_rgb(24, 28, 36) });
+                            .fill(if sel { Color32::from_rgb(56, 98, 154) } else { Color32::from_rgb(30, 30, 35) });
                             if ui.add(btn).clicked() {
                                 self.tab = idx;
                             }
@@ -1572,17 +1706,17 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                 });
         }
 
-        let central_margin_x: i8 = if wide_mode { 28 } else { 16 };
+        let central_margin_x: i8 = if wide_mode { 24 } else { 14 };
         let central_frame = egui::Frame::NONE
-            .fill(Color32::from_rgba_unmultiplied(19, 22, 29, 242))
-            .inner_margin(egui::Margin::symmetric(central_margin_x, 22));
+            .fill(Color32::from_rgba_unmultiplied(24, 24, 27, 245))
+            .inner_margin(egui::Margin::symmetric(central_margin_x, 18));
 
         egui::CentralPanel::default().frame(central_frame).show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("blueorb_pause_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let body_w = (ui.available_width() - 12.0).clamp(240.0, 720.0);
+                    let body_w = (ui.available_width() - 10.0).clamp(240.0, 680.0);
                     ui.set_max_width(body_w);
                     self.draw_console_tab_body(
                         ui,
@@ -1597,7 +1731,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                         active_top_shape,
                         &mut actions,
                     );
-                    ui.add_space(16.0);
+                    ui.add_space(12.0);
                 });
         });
 
@@ -1646,124 +1780,116 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
     ) {
         match self.tab {
             0 => {
-                // ONGLET 0 : JEU & SAUVEGARDES
-                ui.label(RichText::new("Jeu en pause").size(22.0).strong().color(Color32::WHITE));
+                // TAB 0: GAME
+                ui.label(RichText::new("Paused").size(18.0).strong().color(Color32::from_rgb(238, 238, 242)));
                 let layout_desc = match active_layout {
-                    Screens::Stacked => "Écrans superposés (Classique)",
-                    Screens::LargeTop => "Grand écran principal",
-                    Screens::SideBySide => "Écrans côte à côte",
-                    Screens::SeparateWindows => "Deux fenêtres détachées",
-                    Screens::TopOnly => "Écran haut seul",
-                    Screens::BottomOnly => "Écran tactile seul",
+                    Screens::Stacked => "Stacked",
+                    Screens::LargeTop => "Large Top",
+                    Screens::SideBySide => "Side by Side",
+                    Screens::SeparateWindows => "Dual Window",
+                    Screens::TopOnly => "Top Only",
+                    Screens::BottomOnly => "Bottom Only",
                 };
                 let ratio_desc = match active_top_shape {
-                    TopShape::Console => "Format 5:3 d'origine",
-                    TopShape::Wide16x9 => "Format 16:9",
-                    TopShape::Wide21x9 => "Format 21:9 Ultra-Wide",
-                    TopShape::Wide32x9 => "Format 32:9",
+                    TopShape::Console => "5:3",
+                    TopShape::Wide16x9 => "16:9",
+                    TopShape::Wide21x9 => "21:9",
+                    TopShape::Wide32x9 => "32:9",
                 };
                 ui.label(
                     RichText::new(format!("{ratio_desc}  ·  {layout_desc}"))
-                        .size(14.0)
-                        .color(Color32::from_rgb(148, 156, 172)),
+                        .size(12.5)
+                        .monospace()
+                        .color(Color32::from_rgb(136, 136, 146)),
                 );
-                ui.add_space(18.0);
+                ui.add_space(14.0);
 
-                if console_primary_button(ui, width, 46.0, "Reprendre la partie  (Échap)") {
-                    actions.push(Action::Resume);
-                }
-                ui.add_space(10.0);
-
-                let half_top = (width - 10.0) / 2.0;
+                let third = (width - 16.0) / 3.0;
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    if console_secondary_button(ui, half_top, 42.0, "Plein écran  (F11)", true) {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if console_primary_button(ui, third, 34.0, "Resume (Esc)") {
+                        actions.push(Action::Resume);
+                    }
+                    if console_secondary_button(ui, third, 34.0, "Fullscreen (F11)", true) {
                         actions.push(Action::Fullscreen);
                     }
-                    if console_secondary_button(ui, half_top, 42.0, "Redémarrer le jeu", true) {
+                    if console_secondary_button(ui, third, 34.0, "Reset", true) {
                         actions.push(Action::Reset);
                     }
                 });
 
-                ui.add_space(18.0);
+                ui.add_space(14.0);
 
                 console_card(ui, width, |ui, cw| {
-                    let state_info = saved.unwrap_or("Aucune sauvegarde sur ce numéro");
-                    ui.label(RichText::new("Sauvegarde instantanée").size(16.5).strong().color(Color32::WHITE));
-                    ui.label(
-                        RichText::new(format!("Emplacement n°{}  —  {state_info}", self.slot))
-                            .size(13.0)
-                            .color(Color32::from_rgb(148, 156, 172)),
-                    );
-                    ui.add_space(10.0);
+                    let state_info = saved.unwrap_or("Empty");
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Save States").size(14.0).strong().color(Color32::from_rgb(236, 236, 240)));
+                        ui.label(RichText::new(format!("·  Slot {} ({state_info})", self.slot)).size(12.5).color(Color32::from_rgb(140, 140, 150)));
+                    });
+                    ui.add_space(8.0);
 
                     let slot_opts: [(u8, &str); 9] = [
                         (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5"), (6, "6"), (7, "7"), (8, "8"), (9, "9"),
                     ];
-                    if let Some(s) = console_segmented(ui, cw, 40.0, self.slot, &slot_opts, "slots_seg") {
+                    if let Some(s) = console_segmented(ui, cw, 32.0, self.slot, &slot_opts, "slots_seg") {
                         self.slot = s;
                     }
 
-                    ui.add_space(12.0);
-                    let half = (cw - 10.0) / 2.0;
+                    ui.add_space(10.0);
+                    let half = (cw - 8.0) / 2.0;
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        if console_secondary_button(ui, half, 42.0, &format!("Sauvegarder ici  (F5)"), true) {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if console_secondary_button(ui, half, 32.0, "Save State (F5)", true) {
                             actions.push(Action::SaveState);
                         }
-                        if console_secondary_button(ui, half, 42.0, &format!("Charger cet emplacement  (F8)"), saved.is_some()) {
+                        if console_secondary_button(ui, half, 32.0, "Load State (F8)", saved.is_some()) {
                             actions.push(Action::LoadState);
                         }
                     });
                 });
 
-                ui.add_space(16.0);
-                let half_bot = (width - 10.0) / 2.0;
+                ui.add_space(12.0);
+                let half_bot = (width - 8.0) / 2.0;
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    if console_secondary_button(ui, half_bot, 40.0, "Changer de fichier ROM…", true) {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if console_secondary_button(ui, half_bot, 32.0, "Change ROM…", true) {
                         actions.push(Action::PickRomFile);
                     }
-                    if console_danger_button(ui, half_bot, 40.0, "Quitter le jeu") {
+                    if console_danger_button(ui, half_bot, 32.0, "Quit") {
                         actions.push(Action::Quit);
                     }
                 });
 
                 for job in jobs.iter().filter(|job| !job.stage().finished()) {
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                     ui.label(&job.name);
                     progress(ui, job);
                 }
                 if waiting > 0 {
-                    ui.label(RichText::new(format!("{waiting} en attente")).weak());
+                    ui.label(RichText::new(format!("{waiting} queued")).weak());
                 }
             }
 
             1 => {
-                // ONGLET 1 : ÉCRANS & ULTRA-WIDE
-                ui.label(RichText::new("Écrans & Ultra-Wide").size(22.0).strong().color(Color32::WHITE));
-                ui.label(
-                    RichText::new("Gardez la vue 3DS classique ou détachez l'écran tactile sur une 2e fenêtre (raccourci F7).")
-                        .size(14.0)
-                        .color(Color32::from_rgb(148, 156, 172)),
-                );
-                ui.add_space(14.0);
+                // TAB 1: DISPLAY
+                ui.label(RichText::new("Display").size(18.0).strong().color(Color32::from_rgb(238, 238, 242)));
+                ui.add_space(10.0);
 
-                let card_w = (width - 12.0) / 2.0;
+                let card_w = (width - 10.0) / 2.0;
                 let row1 = [
-                    (Screens::Stacked, "Classique (Par défaut)", "Écran haut au-dessus du bas", 0u8),
-                    (Screens::SeparateWindows, "Deux fenêtres (F7)", "Détacher l'écran tactile à part", 3),
+                    (Screens::Stacked, "Stacked (Default)", "Top screen above touch screen", 0u8),
+                    (Screens::SeparateWindows, "Dual Window (F7)", "Detach touch screen into its own window", 3),
                 ];
                 let row2 = [
-                    (Screens::LargeTop, "Grand écran", "Grand écran haut + petit tactile", 1u8),
-                    (Screens::SideBySide, "Côte à côte", "Les deux écrans côte à côte", 2),
+                    (Screens::LargeTop, "Large Top", "Main display with compact touch panel", 1u8),
+                    (Screens::SideBySide, "Side by Side", "Horizontal dual-screen layout", 2),
                 ];
                 for row in [row1, row2] {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
+                        ui.spacing_mut().item_spacing.x = 10.0;
                         for (lay, title, sub, icon_kind) in row {
                             let selected = active_layout == lay;
-                            if console_screen_layout_card(ui, Vec2::new(card_w, 76.0), title, sub, icon_kind, selected) && !selected {
+                            if console_screen_layout_card(ui, Vec2::new(card_w, 64.0), title, sub, icon_kind, selected) && !selected {
                                 if lay == Screens::SeparateWindows {
                                     actions.push(Action::ToggleDualWindows);
                                 } else {
@@ -1772,70 +1898,59 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                             }
                         }
                     });
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                 }
 
-                ui.add_space(10.0);
-                ui.label(RichText::new("Largeur de l'écran & Ultra-Wide  (F6)").size(18.0).strong().color(Color32::WHITE));
-                ui.label(
-                    RichText::new("Agrandit la vue 3D sur les côtés sans déformer ni étirer vos Pokémon.")
-                        .size(13.5)
-                        .color(Color32::from_rgb(148, 156, 172)),
-                );
-                ui.add_space(8.0);
-
-                let shape_opts = [
-                    (TopShape::Console, "5:3 Base"),
-                    (TopShape::Wide16x9, "16:9 Large"),
-                    (TopShape::Wide21x9, "21:9 Ultra-Wide"),
-                    (TopShape::Wide32x9, "32:9"),
-                ];
-                if let Some(chosen) = console_segmented(ui, width, 42.0, active_top_shape, &shape_opts, "shape_seg") {
-                    actions.push(Action::SetTopShape(chosen));
-                }
-
-                ui.add_space(16.0);
+                ui.add_space(6.0);
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Taille de la fenêtre sur le bureau").size(15.0).strong().color(Color32::WHITE));
+                    ui.label(RichText::new("Top Screen Aspect Ratio (F6)").size(13.5).strong().color(Color32::from_rgb(232, 232, 238)));
                     ui.add_space(6.0);
-                    let scales = [(1u32, "Petite"), (2, "Normale"), (3, "Grande"), (4, "Très grande")];
-                    if let Some(s) = console_segmented(ui, cw, 38.0, settings.scale.clamp(1, 4), &scales, "scale_seg") {
+                    let shape_opts = [
+                        (TopShape::Console, "5:3 Native"),
+                        (TopShape::Wide16x9, "16:9"),
+                        (TopShape::Wide21x9, "21:9"),
+                        (TopShape::Wide32x9, "32:9"),
+                    ];
+                    if let Some(chosen) = console_segmented(ui, cw, 32.0, active_top_shape, &shape_opts, "shape_seg") {
+                        actions.push(Action::SetTopShape(chosen));
+                    }
+
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("Window Scale").size(13.5).strong().color(Color32::from_rgb(232, 232, 238)));
+                    ui.add_space(6.0);
+                    let scales = [(1u32, "1x"), (2, "2x"), (3, "3x"), (4, "4x")];
+                    if let Some(s) = console_segmented(ui, cw, 32.0, settings.scale.clamp(1, 4), &scales, "scale_seg") {
                         settings.scale = s;
                     }
 
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Lissage de l'image").size(15.0).strong().color(Color32::WHITE));
+                    ui.label(RichText::new("Scaling Filter").size(13.5).strong().color(Color32::from_rgb(232, 232, 238)));
                     ui.add_space(6.0);
                     let filters = [
-                        (Filter::Sharp, "Net (Conseillé)"),
-                        (Filter::Smooth, "Adouci"),
-                        (Filter::Pixels, "Rétro pixelisé"),
+                        (Filter::Sharp, "Sharp"),
+                        (Filter::Smooth, "Bilinear"),
+                        (Filter::Pixels, "Nearest"),
                     ];
-                    if let Some(f) = console_segmented(ui, cw, 38.0, settings.filter, &filters, "filter_seg") {
+                    if let Some(f) = console_segmented(ui, cw, 32.0, settings.filter, &filters, "filter_seg") {
                         settings.filter = f;
                     }
                 });
             }
 
             2 => {
-                // ONGLET 2 : QUALITÉ & SON
-                ui.label(RichText::new("Qualité Graphique & Son").size(22.0).strong().color(Color32::WHITE));
-                ui.label(
-                    RichText::new("Choisissez la finesse des graphismes 3D et le volume du jeu.")
-                        .size(14.0)
-                        .color(Color32::from_rgb(148, 156, 172)),
-                );
-                ui.add_space(14.0);
+                // TAB 2: GRAPHICS & AUDIO
+                ui.label(RichText::new("Graphics & Audio").size(18.0).strong().color(Color32::from_rgb(238, 238, 242)));
+                ui.add_space(10.0);
 
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Finesse de la 3D (prend effet au redémarrage)").size(15.5).strong().color(Color32::WHITE));
-                    ui.add_space(8.0);
+                    ui.label(RichText::new("Internal 3D Resolution (applies on restart)").size(13.5).strong().color(Color32::from_rgb(232, 232, 238)));
+                    ui.add_space(6.0);
                     let res_opts = [
-                        (1u32, "3DS d'origine"),
-                        (3, "HD (720p)"),
-                        (4, "Full HD (1080p)"),
-                        (5, "Ultra HD (1440p)"),
-                        (8, "4K"),
+                        (1u32, "1x (240p)"),
+                        (3, "3x (720p)"),
+                        (4, "4x (1080p)"),
+                        (5, "5x (1440p)"),
+                        (8, "8x (4K)"),
                     ];
                     let current_preset = match settings.resolution {
                         0..=2 => 1,
@@ -1844,7 +1959,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                         5..=6 => 5,
                         _ => 8,
                     };
-                    if let Some(r) = console_segmented(ui, cw, 40.0, current_preset, &res_opts, "res_seg") {
+                    if let Some(r) = console_segmented(ui, cw, 32.0, current_preset, &res_opts, "res_seg") {
                         settings.resolution = r;
                     }
 
@@ -1853,127 +1968,105 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                             if !*builtin {
                                 continue;
                             }
-                            ui.add_space(10.0);
-                            ui.separator();
                             ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(6.0);
                             let mut current = *enabled;
-                            let title_fr = if cname.contains("No Outlines") {
-                                "Modèles 3D lisses HD (Sans traits noirs)"
+                            let title_en = if cname.contains("No Outlines") {
+                                "No Outlines (HD)"
                             } else if cname == "60 FPS" {
-                                "Mode Vitesse Rapide x2"
+                                "60 FPS Speedup (2x)"
                             } else {
                                 cname.as_str()
                             };
-                            let desc_fr = if cname.contains("No Outlines") {
-                                "Retire immédiatement le contour noir autour des personnages et Pokémon."
-                            } else if cname == "60 FPS" {
-                                "Accélère les déplacements et les combats x2 (ou maintenez Tab en jeu)."
-                            } else {
-                                notes.as_str()
-                            };
-                            if console_toggle_row(ui, cw, title_fr, desc_fr, &mut current) {
+                            if console_toggle_row(ui, cw, title_en, notes.as_str(), &mut current) {
                                 actions.push(Action::Cheat(idx, current));
                             }
                         }
                     }
 
-                    ui.add_space(10.0);
-                    ui.separator();
                     ui.add_space(8.0);
-
+                    ui.separator();
+                    ui.add_space(6.0);
                     console_toggle_row(
                         ui,
                         cw,
-                        "Fluidité caméra 60 FPS (Interpolation)",
-                        "Ajoute des images intermédiaires sur les mouvements lents de caméra.",
+                        "Frame Interpolation (60 Hz)",
+                        "Interpolates slow camera motion between 30 FPS frames.",
                         &mut settings.frame_interpolation,
                     );
 
                     ui.add_space(8.0);
                     ui.separator();
-                    ui.add_space(8.0);
-
+                    ui.add_space(6.0);
                     console_toggle_row(
                         ui,
                         cw,
-                        "Packs de textures HD personnalisés",
-                        "Charge automatiquement les textures placées dans le dossier Mods.",
+                        "Custom Texture Packs",
+                        "Loads replacement PNG textures from the Mods folder.",
                         &mut settings.texture_packs,
                     );
                 });
 
-                ui.add_space(16.0);
+                ui.add_space(12.0);
 
                 console_card(ui, width, |ui, cw| {
                     let pct = (settings.volume * 100.0).round() as i32;
-                    ui.label(
-                        RichText::new(format!("Volume du jeu  —  {pct}%"))
-                            .size(15.5)
-                            .strong()
-                            .color(Color32::WHITE),
-                    );
-                    ui.add_space(6.0);
+                    ui.label(RichText::new(format!("Master Volume ({pct}%)")).size(13.5).strong().color(Color32::from_rgb(232, 232, 238)));
+                    ui.add_space(4.0);
                     ui.spacing_mut().slider_width = cw;
                     ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).show_value(false));
 
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
                     ui.separator();
-                    ui.add_space(8.0);
-                    console_toggle_row(ui, cw, "Couper le son", "Met le jeu en sourdine.", &mut settings.mute);
+                    ui.add_space(6.0);
+                    console_toggle_row(ui, cw, "Mute Audio", "", &mut settings.mute);
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    console_toggle_row(ui, cw, "Show FPS Counter", "", &mut settings.show_fps);
 
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
-                    console_toggle_row(
-                        ui,
-                        cw,
-                        "Afficher les FPS",
-                        "Affiche le nombre d'images par seconde en haut de l'écran.",
-                        &mut settings.show_fps,
-                    );
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("Langue de la console (au redémarrage)").size(15.0).strong().color(Color32::WHITE));
+                    ui.label(RichText::new("System Language (applies on restart)").size(13.5).strong().color(Color32::from_rgb(232, 232, 238)));
                     ui.add_space(6.0);
                     let lang_opts = [
-                        (Language::French, "Français"),
                         (Language::English, "English"),
+                        (Language::French, "Français"),
                         (Language::Japanese, "日本語"),
                         (Language::German, "Deutsch"),
                         (Language::Spanish, "Español"),
                         (Language::Italian, "Italiano"),
                     ];
-                    if let Some(l) = console_segmented(ui, cw, 38.0, settings.language, &lang_opts, "lang_seg") {
+                    if let Some(l) = console_segmented(ui, cw, 32.0, settings.language, &lang_opts, "lang_seg") {
                         settings.language = l;
                     }
                 });
             }
 
             3 => {
-                // ONGLET 3 : TOUCHES & MANETTE
-                ui.label(RichText::new("Touches & Manette").size(22.0).strong().color(Color32::WHITE));
-                ui.label(
-                    RichText::new("Les manettes Xbox, PlayStation et Switch fonctionnent directement sans réglage. Cliquez sur une touche pour la changer.")
-                        .size(14.0)
-                        .color(Color32::from_rgb(148, 156, 172)),
-                );
+                // TAB 3: CONTROLS
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Controls").size(18.0).strong().color(Color32::from_rgb(238, 238, 242)));
+                    let rem = (ui.available_width() - 136.0).max(0.0);
+                    ui.add_space(rem);
+                    if console_secondary_button(ui, 132.0, 28.0, "Reset Defaults", true) {
+                        settings.keys = Keys::default();
+                        settings.pad = PadButtons::default();
+                        self.rebinding = None;
+                        self.rebinding_pad = None;
+                    }
+                });
                 ui.add_space(10.0);
-                if console_secondary_button(ui, 230.0, 38.0, "Remettre les touches de base", true) {
-                    settings.keys = Keys::default();
-                    settings.pad = PadButtons::default();
-                    self.rebinding = None;
-                    self.rebinding_pad = None;
-                }
-                ui.add_space(14.0);
 
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Clavier").size(16.5).strong().color(Color32::WHITE));
-                    ui.add_space(8.0);
+                    ui.label(RichText::new("Keyboard").size(14.0).strong().color(Color32::from_rgb(236, 236, 240)));
+                    ui.add_space(6.0);
                     for (i, (kname, key)) in settings.keys.all_mut().into_iter().enumerate() {
                         let waiting_this = self.rebinding == Some(i);
-                        let badge = if waiting_this { "Appuyez…".to_owned() } else { key_name(*key) };
+                        let badge = if waiting_this { "Press key…".to_owned() } else { key_name(*key) };
                         if console_binding_row(ui, cw, friendly_control_name(kname), &badge, waiting_this) {
                             self.rebinding = Some(i);
                             self.rebinding_pad = None;
@@ -1981,14 +2074,14 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                     }
                 });
 
-                ui.add_space(16.0);
+                ui.add_space(12.0);
 
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Manette").size(16.5).strong().color(Color32::WHITE));
-                    ui.add_space(8.0);
+                    ui.label(RichText::new("Controller").size(14.0).strong().color(Color32::from_rgb(236, 236, 240)));
+                    ui.add_space(6.0);
                     for (i, (bname, button)) in settings.pad.all_mut().into_iter().enumerate() {
                         let waiting_this = self.rebinding_pad == Some(i);
-                        let badge = if waiting_this { "Appuyez…" } else { button_name(*button) };
+                        let badge = if waiting_this { "Press button…" } else { button_name(*button) };
                         if console_binding_row(ui, cw, friendly_control_name(bname), badge, waiting_this) {
                             self.rebinding_pad = Some(i);
                             self.rebinding = None;
@@ -1998,65 +2091,60 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
             }
 
             _ => {
-                // ONGLET 4 : MULTIJOUEUR & BONUS
-                ui.label(RichText::new("Multijoueur, Mods & Bonus").size(22.0).strong().color(Color32::WHITE));
-                ui.label(
-                    RichText::new("Jouez à plusieurs en réseau local, scannez des QR Codes de Bases Secrètes ou ajoutez des mods.")
-                        .size(14.0)
-                        .color(Color32::from_rgb(148, 156, 172)),
-                );
-                ui.add_space(14.0);
+                // TAB 4: SYSTEM & CHEATS
+                ui.label(RichText::new("System & Cheats").size(18.0).strong().color(Color32::from_rgb(238, 238, 242)));
+                ui.add_space(10.0);
 
-                let half = (width - 10.0) / 2.0;
+                let half = (width - 8.0) / 2.0;
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    if console_secondary_button(ui, half, 42.0, "Salons Multijoueur en réseau", true) {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if console_secondary_button(ui, half, 32.0, "Multiplayer Rooms", true) {
                         self.multiplayer_open = true;
                     }
-                    if console_secondary_button(ui, half, 42.0, "Scanner une image / QR Code", true) {
+                    if console_secondary_button(ui, half, 32.0, "Load Camera Image / QR…", true) {
                         actions.push(Action::ChooseCameraPicture);
                     }
                 });
 
-                ui.add_space(10.0);
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
+                    ui.spacing_mut().item_spacing.x = 8.0;
                     if let Some(pid) = program_id {
-                        if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier des Mods", true) {
+                        if console_secondary_button(ui, half, 32.0, "Open Mods Folder", true) {
                             actions.push(Action::Mods(pid));
                         }
-                    } else if console_secondary_button(ui, half, 42.0, "Ouvrir le dossier des Codes", true) {
+                    } else if console_secondary_button(ui, half, 32.0, "Open Cheats Folder", true) {
                         actions.push(Action::CheatsFolder);
                     }
-                    if console_secondary_button(ui, half, 42.0, "Retour à l'écran d'accueil", true) {
+                    if console_secondary_button(ui, half, 32.0, "Back to Launcher", true) {
                         actions.push(Action::Library);
                     }
                 });
 
-                ui.add_space(16.0);
+                ui.add_space(12.0);
 
                 console_card(ui, width, |ui, cw| {
-                    ui.label(RichText::new("Codes de triche (Action Replay)").size(16.5).strong().color(Color32::WHITE));
+                    ui.label(RichText::new("Action Replay Cheats").size(14.0).strong().color(Color32::from_rgb(236, 236, 240)));
                     ui.add_space(6.0);
-                    let btn_half = (cw - 10.0) / 2.0;
+                    let btn_half = (cw - 8.0) / 2.0;
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        if console_secondary_button(ui, btn_half, 36.0, "Actualiser la liste", true) {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if console_secondary_button(ui, btn_half, 30.0, "Reload Cheats", true) {
                             actions.push(Action::ReloadCheats);
                         }
-                        if console_secondary_button(ui, btn_half, 36.0, "Ouvrir le dossier des codes", true) {
+                        if console_secondary_button(ui, btn_half, 30.0, "Open Cheats Folder", true) {
                             actions.push(Action::CheatsFolder);
                         }
                     });
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
 
                     if let Some(cheat_list) = cheats {
                         let user_cheats: Vec<_> = cheat_list.iter().enumerate().filter(|(_, c)| !c.3).collect();
                         if user_cheats.is_empty() {
                             ui.label(
-                                RichText::new("Aucun code personnalisé ajouté pour le moment.")
-                                    .size(13.5)
-                                    .color(Color32::from_rgb(148, 156, 172)),
+                                RichText::new("No custom cheat codes configured.")
+                                    .size(12.5)
+                                    .color(Color32::from_rgb(138, 138, 148)),
                             );
                         } else {
                             for (idx, (cname, enabled, notes, _)) in user_cheats {
@@ -2069,24 +2157,24 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
                         }
                     }
 
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.cheat_name)
-                            .hint_text("Nom du code (ex: Super Bonbons)")
-                            .margin(egui::Margin::symmetric(10, 8))
+                            .hint_text("Cheat name")
+                            .margin(egui::Margin::symmetric(8, 6))
                             .desired_width(cw),
                     );
                     ui.add_space(6.0);
                     ui.add(
                         egui::TextEdit::multiline(&mut self.cheat_code)
                             .hint_text("00000000 00000000")
-                            .margin(egui::Margin::symmetric(10, 8))
+                            .margin(egui::Margin::symmetric(8, 6))
                             .desired_rows(3)
                             .desired_width(cw)
                             .font(egui::TextStyle::Monospace),
                     );
-                    ui.add_space(8.0);
-                    if console_primary_button(ui, 190.0, 38.0, "Ajouter ce code") && !self.cheat_code.trim().is_empty() {
+                    ui.add_space(6.0);
+                    if console_primary_button(ui, 132.0, 30.0, "Add Cheat") && !self.cheat_code.trim().is_empty() {
                         actions.push(Action::AddCheat(
                             std::mem::take(&mut self.cheat_name),
                             std::mem::take(&mut self.cheat_code),
@@ -2099,62 +2187,79 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Me
 
 const WIDE_CONSOLE_WIDGET_HELPERS_RS: &str = r#"
 fn friendly_control_name(raw: &str) -> &str {
-    match raw {
-        "A" => "Bouton A (Valider)",
-        "B" => "Bouton B (Annuler / Courir)",
-        "X" => "Bouton X (Menu Pokémon)",
-        "Y" => "Bouton Y (Objets enregistrés)",
-        "L" => "Gâchette L",
-        "R" => "Gâchette R",
-        "Start" => "Start",
-        "Select" => "Select",
-        "D-pad up" => "Croix — Haut",
-        "D-pad down" => "Croix — Bas",
-        "D-pad left" => "Croix — Gauche",
-        "D-pad right" => "Croix — Droite",
-        "Circle pad up" => "Stick — Haut",
-        "Circle pad down" => "Stick — Bas",
-        "Circle pad left" => "Stick — Gauche",
-        "Circle pad right" => "Stick — Droite",
-        "C-stick up" => "Second stick — Haut",
-        "C-stick down" => "Second stick — Bas",
-        "C-stick left" => "Second stick — Gauche",
-        "C-stick right" => "Second stick — Droite",
-        other => other,
-    }
+    raw
+}
+
+fn paint_diveball_emblem(painter: &egui::Painter, center: egui::Pos2, r: f32) {
+    // Clean geometric Dive-Ball vector icon painted directly via egui primitives
+    painter.circle_filled(center, r, Color32::from_rgb(232, 238, 246));
+    // Upper Sapphire hemisphere clip
+    let top_clip = egui::Rect::from_min_max(
+        egui::pos2(center.x - r - 1.0, center.y - r - 1.0),
+        egui::pos2(center.x + r + 1.0, center.y - r * 0.04),
+    );
+    let tp = painter.with_clip_rect(top_clip);
+    tp.circle_filled(center, r, Color32::from_rgb(24, 108, 218));
+    // Aqua upper cap
+    let cap_clip = egui::Rect::from_min_max(
+        egui::pos2(center.x - r - 1.0, center.y - r - 1.0),
+        egui::pos2(center.x + r + 1.0, center.y - r * 0.48),
+    );
+    painter.with_clip_rect(cap_clip).circle_filled(center, r, Color32::from_rgb(86, 184, 248));
+    // White wave accent band
+    let wave_clip = egui::Rect::from_min_max(
+        egui::pos2(center.x - r - 1.0, center.y - r * 0.25),
+        egui::pos2(center.x + r + 1.0, center.y - r * 0.14),
+    );
+    painter.with_clip_rect(wave_clip).circle_filled(center, r * 0.96, Color32::from_rgb(212, 242, 255));
+
+    // Equatorial dark seam
+    let seam_h = (r * 0.16).max(1.8);
+    let ball_clip = egui::Rect::from_center_size(center, Vec2::splat(r * 2.0));
+    painter.with_clip_rect(ball_clip).rect_filled(
+        egui::Rect::from_center_size(center, Vec2::new(r * 2.0, seam_h)),
+        egui::CornerRadius::ZERO,
+        Color32::from_rgb(24, 28, 36),
+    );
+    painter.circle_stroke(center, r, egui::Stroke::new(1.0, Color32::from_rgb(20, 24, 32)));
+
+    // Center clasp ring + sapphire button
+    painter.circle_filled(center, r * 0.36, Color32::from_rgb(24, 28, 36));
+    painter.circle_filled(center, r * 0.25, Color32::from_rgb(240, 244, 250));
+    painter.circle_filled(center, r * 0.14, Color32::from_rgb(56, 182, 255));
 }
 
 fn console_nav_button(ui: &mut egui::Ui, width: f32, label: &str, active: bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 42.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 32.0), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = resp.hovered();
         let bg = if active {
-            Color32::from_rgb(30, 35, 46)
+            Color32::from_rgb(36, 36, 42)
         } else if hovered {
-            Color32::from_rgb(22, 26, 34)
+            Color32::from_rgb(28, 28, 33)
         } else {
             Color32::TRANSPARENT
         };
         if bg != Color32::TRANSPARENT {
-            ui.painter().rect_filled(rect, egui::CornerRadius::same(8), bg);
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), bg);
         }
         if active {
             let bar = egui::Rect::from_min_size(
-                egui::pos2(rect.left() + 4.0, rect.top() + 10.0),
-                Vec2::new(3.5, rect.height() - 20.0),
+                egui::pos2(rect.left() + 2.0, rect.top() + 7.0),
+                Vec2::new(2.5, rect.height() - 14.0),
             );
-            ui.painter().rect_filled(bar, egui::CornerRadius::same(2), Color32::from_rgb(59, 130, 246));
+            ui.painter().rect_filled(bar, egui::CornerRadius::same(1), Color32::from_rgb(82, 138, 212));
         }
         let text_col = if active || hovered {
-            Color32::WHITE
+            Color32::from_rgb(242, 242, 246)
         } else {
-            Color32::from_rgb(172, 180, 194)
+            Color32::from_rgb(164, 164, 174)
         };
         ui.painter().text(
-            egui::pos2(rect.left() + 16.0, rect.center().y),
+            egui::pos2(rect.left() + 12.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(14.5),
+            egui::FontId::proportional(13.0),
             text_col,
         );
     }
@@ -2165,18 +2270,24 @@ fn console_primary_button(ui: &mut egui::Ui, width: f32, height: f32, label: &st
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let fill = if resp.is_pointer_button_down_on() {
-            Color32::from_rgb(29, 78, 216)
+            Color32::from_rgb(46, 82, 132)
         } else if resp.hovered() {
-            Color32::from_rgb(59, 130, 246)
+            Color32::from_rgb(66, 112, 174)
         } else {
-            Color32::from_rgb(37, 99, 235)
+            Color32::from_rgb(56, 98, 154)
         };
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(9), fill);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), fill);
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(4),
+            egui::Stroke::new(1.0, Color32::from_rgb(86, 134, 198)),
+            egui::StrokeKind::Inside,
+        );
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(15.0),
+            egui::FontId::proportional(13.0),
             Color32::WHITE,
         );
     }
@@ -2188,31 +2299,31 @@ fn console_secondary_button(ui: &mut egui::Ui, width: f32, height: f32, label: &
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), sense);
     if ui.is_rect_visible(rect) {
         let fill = if !enabled {
-            Color32::from_rgb(24, 27, 34)
+            Color32::from_rgb(28, 28, 32)
         } else if resp.is_pointer_button_down_on() {
-            Color32::from_rgb(48, 55, 68)
+            Color32::from_rgb(54, 54, 62)
         } else if resp.hovered() {
-            Color32::from_rgb(40, 46, 58)
+            Color32::from_rgb(46, 46, 53)
         } else {
-            Color32::from_rgb(30, 34, 44)
+            Color32::from_rgb(38, 38, 44)
         };
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(9), fill);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), fill);
         ui.painter().rect_stroke(
             rect,
-            egui::CornerRadius::same(9),
-            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18)),
+            egui::CornerRadius::same(4),
+            egui::Stroke::new(1.0, Color32::from_rgb(62, 62, 71)),
             egui::StrokeKind::Inside,
         );
         let col = if enabled {
-            Color32::from_rgb(236, 239, 245)
+            Color32::from_rgb(232, 232, 238)
         } else {
-            Color32::from_rgb(104, 112, 126)
+            Color32::from_rgb(104, 104, 114)
         };
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(12.5),
             col,
         );
     }
@@ -2223,23 +2334,23 @@ fn console_danger_button(ui: &mut egui::Ui, width: f32, height: f32, label: &str
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let fill = if resp.hovered() {
-            Color32::from_rgb(76, 30, 36)
+            Color32::from_rgb(72, 32, 34)
         } else {
-            Color32::from_rgb(48, 22, 26)
+            Color32::from_rgb(46, 25, 27)
         };
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(9), fill);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), fill);
         ui.painter().rect_stroke(
             rect,
-            egui::CornerRadius::same(9),
-            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(248, 113, 113, 64)),
+            egui::CornerRadius::same(4),
+            egui::Stroke::new(1.0, Color32::from_rgb(104, 50, 54)),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(14.0),
-            Color32::from_rgb(252, 165, 165),
+            egui::FontId::proportional(12.5),
+            Color32::from_rgb(244, 168, 168),
         );
     }
     resp.clicked()
@@ -2247,12 +2358,12 @@ fn console_danger_button(ui: &mut egui::Ui, width: f32, height: f32, label: &str
 
 fn console_card(ui: &mut egui::Ui, width: f32, body: impl FnOnce(&mut egui::Ui, f32)) {
     egui::Frame::NONE
-        .fill(Color32::from_rgb(26, 29, 38))
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18)))
-        .corner_radius(egui::CornerRadius::same(11))
-        .inner_margin(egui::Margin::same(18))
+        .fill(Color32::from_rgb(30, 30, 34))
+        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(50, 50, 57)))
+        .corner_radius(egui::CornerRadius::same(5))
+        .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
-            let cw = (width - 38.0).max(160.0);
+            let cw = (width - 30.0).max(160.0);
             ui.set_min_width(cw);
             ui.set_max_width(cw);
             body(ui, cw);
@@ -2270,18 +2381,17 @@ fn console_segmented<T: Copy + PartialEq>(
     let mut picked = None;
     let (outer_rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
     if ui.is_rect_visible(outer_rect) {
-        ui.painter().rect_filled(outer_rect, egui::CornerRadius::same(9), Color32::from_rgb(14, 16, 21));
+        ui.painter().rect_filled(outer_rect, egui::CornerRadius::same(4), Color32::from_rgb(20, 20, 23));
         ui.painter().rect_stroke(
             outer_rect,
-            egui::CornerRadius::same(9),
-            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)),
+            egui::CornerRadius::same(4),
+            egui::Stroke::new(1.0, Color32::from_rgb(48, 48, 55)),
             egui::StrokeKind::Inside,
         );
     }
-    let pad = 4.0;
-    let inner = outer_rect.shrink(pad);
+    let inner = outer_rect.shrink(3.0);
     let n = options.len().max(1) as f32;
-    let gap = 4.0;
+    let gap = 3.0;
     let item_w = ((inner.width() - gap * (n - 1.0)) / n).max(12.0);
 
     for (idx, &(val, label)) in options.iter().enumerate() {
@@ -2291,20 +2401,20 @@ fn console_segmented<T: Copy + PartialEq>(
         let selected = val == current;
         if ui.is_rect_visible(item_rect) {
             if selected {
-                ui.painter().rect_filled(item_rect, egui::CornerRadius::same(6), Color32::from_rgb(37, 99, 235));
+                ui.painter().rect_filled(item_rect, egui::CornerRadius::same(3), Color32::from_rgb(56, 98, 154));
             } else if resp.hovered() {
-                ui.painter().rect_filled(item_rect, egui::CornerRadius::same(6), Color32::from_rgb(28, 32, 42));
+                ui.painter().rect_filled(item_rect, egui::CornerRadius::same(3), Color32::from_rgb(34, 34, 40));
             }
             let col = if selected || resp.hovered() {
                 Color32::WHITE
             } else {
-                Color32::from_rgb(172, 180, 194)
+                Color32::from_rgb(168, 168, 178)
             };
             ui.painter().text(
                 item_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::proportional(13.5),
+                egui::FontId::proportional(12.5),
                 col,
             );
         }
@@ -2316,7 +2426,7 @@ fn console_segmented<T: Copy + PartialEq>(
 }
 
 fn console_toggle_row(ui: &mut egui::Ui, width: f32, title: &str, subtitle: &str, value: &mut bool) -> bool {
-    let row_h = if subtitle.is_empty() { 34.0 } else { 46.0 };
+    let row_h = if subtitle.is_empty() { 28.0 } else { 40.0 };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, row_h), egui::Sense::click());
     let mut changed = false;
     if resp.clicked() {
@@ -2324,47 +2434,47 @@ fn console_toggle_row(ui: &mut egui::Ui, width: f32, title: &str, subtitle: &str
         changed = true;
     }
     if ui.is_rect_visible(rect) {
-        let switch_w = 46.0;
-        let switch_h = 26.0;
+        let switch_w = 40.0;
+        let switch_h = 22.0;
         let switch_rect = egui::Rect::from_min_size(
             egui::pos2(rect.right() - switch_w, rect.center().y - switch_h * 0.5),
             Vec2::new(switch_w, switch_h),
         );
         let track = if *value {
-            Color32::from_rgb(37, 99, 235)
+            Color32::from_rgb(56, 98, 154)
         } else if resp.hovered() {
-            Color32::from_rgb(56, 62, 76)
+            Color32::from_rgb(56, 56, 64)
         } else {
-            Color32::from_rgb(42, 47, 58)
+            Color32::from_rgb(42, 42, 49)
         };
-        ui.painter().rect_filled(switch_rect, egui::CornerRadius::same(13), track);
-        let knob_x = if *value { switch_rect.right() - 13.0 } else { switch_rect.left() + 13.0 };
-        ui.painter().circle_filled(egui::pos2(knob_x, switch_rect.center().y), 9.5, Color32::WHITE);
+        ui.painter().rect_filled(switch_rect, egui::CornerRadius::same(11), track);
+        let knob_x = if *value { switch_rect.right() - 11.0 } else { switch_rect.left() + 11.0 };
+        ui.painter().circle_filled(egui::pos2(knob_x, switch_rect.center().y), 8.0, Color32::WHITE);
 
-        let text_clip = egui::Rect::from_min_max(rect.min, egui::pos2(switch_rect.left() - 14.0, rect.bottom()));
+        let text_clip = egui::Rect::from_min_max(rect.min, egui::pos2(switch_rect.left() - 12.0, rect.bottom()));
         let tp = ui.painter().with_clip_rect(text_clip);
         if subtitle.is_empty() {
             tp.text(
                 egui::pos2(rect.left(), rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 title,
-                egui::FontId::proportional(14.5),
-                Color32::from_rgb(240, 242, 246),
+                egui::FontId::proportional(13.0),
+                Color32::from_rgb(232, 232, 238),
             );
         } else {
             tp.text(
-                egui::pos2(rect.left(), rect.top() + 12.0),
+                egui::pos2(rect.left(), rect.top() + 10.0),
                 egui::Align2::LEFT_CENTER,
                 title,
-                egui::FontId::proportional(14.5),
-                Color32::from_rgb(240, 242, 246),
+                egui::FontId::proportional(13.0),
+                Color32::from_rgb(232, 232, 238),
             );
             tp.text(
-                egui::pos2(rect.left(), rect.top() + 33.0),
+                egui::pos2(rect.left(), rect.top() + 28.0),
                 egui::Align2::LEFT_CENTER,
                 subtitle,
-                egui::FontId::proportional(12.5),
-                Color32::from_rgb(142, 150, 166),
+                egui::FontId::proportional(11.5),
+                Color32::from_rgb(138, 138, 148),
             );
         }
     }
@@ -2372,39 +2482,39 @@ fn console_toggle_row(ui: &mut egui::Ui, width: f32, title: &str, subtitle: &str
 }
 
 fn console_binding_row(ui: &mut egui::Ui, width: f32, label: &str, badge: &str, active: bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 36.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 30.0), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         if resp.hovered() {
-            ui.painter().rect_filled(rect, egui::CornerRadius::same(6), Color32::from_rgb(32, 36, 46));
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), Color32::from_rgb(36, 36, 42));
         }
         ui.painter().text(
-            egui::pos2(rect.left() + 6.0, rect.center().y),
+            egui::pos2(rect.left() + 4.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(14.0),
-            Color32::from_rgb(228, 232, 240),
+            egui::FontId::proportional(13.0),
+            Color32::from_rgb(224, 224, 232),
         );
         let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - 134.0, rect.center().y - 14.0),
-            Vec2::new(130.0, 28.0),
+            egui::pos2(rect.right() - 120.0, rect.center().y - 12.0),
+            Vec2::new(116.0, 24.0),
         );
         let fill = if active {
-            Color32::from_rgb(37, 99, 235)
+            Color32::from_rgb(56, 98, 154)
         } else {
-            Color32::from_rgb(16, 19, 25)
+            Color32::from_rgb(20, 20, 23)
         };
-        ui.painter().rect_filled(badge_rect, egui::CornerRadius::same(6), fill);
+        ui.painter().rect_filled(badge_rect, egui::CornerRadius::same(4), fill);
         ui.painter().rect_stroke(
             badge_rect,
-            egui::CornerRadius::same(6),
-            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18)),
+            egui::CornerRadius::same(4),
+            egui::Stroke::new(1.0, Color32::from_rgb(52, 52, 60)),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
             badge_rect.center(),
             egui::Align2::CENTER_CENTER,
             badge,
-            egui::FontId::monospace(13.0),
+            egui::FontId::monospace(12.0),
             Color32::WHITE,
         );
     }
@@ -2422,84 +2532,332 @@ fn console_screen_layout_card(
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let bg = if selected {
-            Color32::from_rgb(26, 36, 56)
+            Color32::from_rgb(30, 40, 56)
         } else if resp.hovered() {
-            Color32::from_rgb(33, 38, 49)
+            Color32::from_rgb(36, 36, 42)
         } else {
-            Color32::from_rgb(26, 29, 38)
+            Color32::from_rgb(30, 30, 34)
         };
         let border = if selected {
-            egui::Stroke::new(1.5, Color32::from_rgb(59, 130, 246))
+            egui::Stroke::new(1.5, Color32::from_rgb(82, 138, 212))
         } else if resp.hovered() {
-            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 42))
+            egui::Stroke::new(1.0, Color32::from_rgb(74, 74, 84))
         } else {
-            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18))
+            egui::Stroke::new(1.0, Color32::from_rgb(50, 50, 57))
         };
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(10), bg);
-        ui.painter().rect_stroke(rect, egui::CornerRadius::same(10), border, egui::StrokeKind::Inside);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(5), bg);
+        ui.painter().rect_stroke(rect, egui::CornerRadius::same(5), border, egui::StrokeKind::Inside);
 
-        let cx = rect.left() + 36.0;
+        let cx = rect.left() + 32.0;
         let cy = rect.center().y;
         let top_fill = if selected {
-            Color32::from_rgb(96, 165, 250)
+            Color32::from_rgb(104, 168, 248)
         } else {
-            Color32::from_rgb(138, 148, 168)
+            Color32::from_rgb(142, 142, 154)
         };
         let bot_fill = if selected {
-            Color32::from_rgba_unmultiplied(96, 165, 250, 165)
+            Color32::from_rgba_unmultiplied(104, 168, 248, 165)
         } else {
-            Color32::from_rgba_unmultiplied(138, 148, 168, 145)
+            Color32::from_rgba_unmultiplied(142, 142, 154, 140)
         };
 
         match kind {
             0 => {
-                let r_top = egui::Rect::from_center_size(egui::pos2(cx, cy - 10.0), Vec2::new(34.0, 17.0));
-                let r_bot = egui::Rect::from_center_size(egui::pos2(cx, cy + 10.0), Vec2::new(26.0, 15.0));
-                ui.painter().rect_filled(r_top, egui::CornerRadius::same(3), top_fill);
-                ui.painter().rect_filled(r_bot, egui::CornerRadius::same(3), bot_fill);
+                let r_top = egui::Rect::from_center_size(egui::pos2(cx, cy - 9.0), Vec2::new(30.0, 15.0));
+                let r_bot = egui::Rect::from_center_size(egui::pos2(cx, cy + 9.0), Vec2::new(23.0, 13.0));
+                ui.painter().rect_filled(r_top, egui::CornerRadius::same(2), top_fill);
+                ui.painter().rect_filled(r_bot, egui::CornerRadius::same(2), bot_fill);
             }
             1 => {
-                let r_top = egui::Rect::from_center_size(egui::pos2(cx - 8.0, cy), Vec2::new(32.0, 22.0));
-                let r_bot = egui::Rect::from_center_size(egui::pos2(cx + 16.0, cy + 5.0), Vec2::new(14.0, 12.0));
-                ui.painter().rect_filled(r_top, egui::CornerRadius::same(3), top_fill);
+                let r_top = egui::Rect::from_center_size(egui::pos2(cx - 7.0, cy), Vec2::new(28.0, 19.0));
+                let r_bot = egui::Rect::from_center_size(egui::pos2(cx + 14.0, cy + 4.0), Vec2::new(13.0, 11.0));
+                ui.painter().rect_filled(r_top, egui::CornerRadius::same(2), top_fill);
                 ui.painter().rect_filled(r_bot, egui::CornerRadius::same(2), bot_fill);
             }
             2 => {
-                let r_top = egui::Rect::from_center_size(egui::pos2(cx - 12.0, cy), Vec2::new(24.0, 16.0));
-                let r_bot = egui::Rect::from_center_size(egui::pos2(cx + 13.0, cy), Vec2::new(20.0, 16.0));
-                ui.painter().rect_filled(r_top, egui::CornerRadius::same(3), top_fill);
-                ui.painter().rect_filled(r_bot, egui::CornerRadius::same(3), bot_fill);
+                let r_top = egui::Rect::from_center_size(egui::pos2(cx - 11.0, cy), Vec2::new(21.0, 14.0));
+                let r_bot = egui::Rect::from_center_size(egui::pos2(cx + 11.0, cy), Vec2::new(18.0, 14.0));
+                ui.painter().rect_filled(r_top, egui::CornerRadius::same(2), top_fill);
+                ui.painter().rect_filled(r_bot, egui::CornerRadius::same(2), bot_fill);
             }
             _ => {
-                let w1 = egui::Rect::from_center_size(egui::pos2(cx - 8.0, cy - 5.0), Vec2::new(30.0, 19.0));
-                let w2 = egui::Rect::from_center_size(egui::pos2(cx + 10.0, cy + 6.0), Vec2::new(24.0, 17.0));
-                ui.painter().rect_filled(w1, egui::CornerRadius::same(3), top_fill);
-                ui.painter().rect_filled(w2.expand(2.0), egui::CornerRadius::same(4), bg);
-                ui.painter().rect_filled(w2, egui::CornerRadius::same(3), bot_fill);
+                let w1 = egui::Rect::from_center_size(egui::pos2(cx - 7.0, cy - 4.0), Vec2::new(27.0, 17.0));
+                let w2 = egui::Rect::from_center_size(egui::pos2(cx + 9.0, cy + 5.0), Vec2::new(22.0, 15.0));
+                ui.painter().rect_filled(w1, egui::CornerRadius::same(2), top_fill);
+                ui.painter().rect_filled(w2.expand(2.0), egui::CornerRadius::same(3), bg);
+                ui.painter().rect_filled(w2, egui::CornerRadius::same(2), bot_fill);
             }
         }
 
         let text_clip = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 72.0, rect.top() + 4.0),
-            egui::pos2(rect.right() - 10.0, rect.bottom() - 4.0),
+            egui::pos2(rect.left() + 64.0, rect.top() + 4.0),
+            egui::pos2(rect.right() - 8.0, rect.bottom() - 4.0),
         );
         let tp = ui.painter().with_clip_rect(text_clip);
         tp.text(
-            egui::pos2(rect.left() + 72.0, rect.center().y - 9.0),
+            egui::pos2(rect.left() + 64.0, rect.center().y - 8.0),
             egui::Align2::LEFT_CENTER,
             title,
-            egui::FontId::proportional(14.5),
-            Color32::WHITE,
+            egui::FontId::proportional(13.0),
+            Color32::from_rgb(236, 236, 240),
         );
         tp.text(
-            egui::pos2(rect.left() + 72.0, rect.center().y + 11.0),
+            egui::pos2(rect.left() + 64.0, rect.center().y + 10.0),
             egui::Align2::LEFT_CENTER,
             subtitle,
-            egui::FontId::proportional(12.0),
-            Color32::from_rgb(142, 150, 166),
+            egui::FontId::proportional(11.5),
+            Color32::from_rgb(138, 138, 148),
         );
     }
     resp.clicked()
+}
+"#;
+
+const OFFICIAL_ICON_UPDATER_RS: &str = r#"
+/// Returns the official Alpha Sapphire ROM icon if a recompiled ROM is already configured,
+/// or the procedural Sapphire Dive-Ball launcher icon prior to recompilation.
+fn blueorb_initial_window_icon(rom_path: Option<&Path>) -> Option<winit::window::Icon> {
+    if let Some(rom) = rom_path.filter(|p| p.is_file()) {
+        if let Ok(title) = zakuro_fs::Title::load(rom) {
+            let pid = title.program_id();
+            if zakuro_core::recompiled::installed(pid).is_some() {
+                if let Some(smdh) = title.exefs_file("icon").and_then(library::Smdh::parse) {
+                    if smdh.icon.len() == 48 * 48 * 4 {
+                        let rgba = blueorb_upscale_smdh_rgba(&smdh.icon, 64);
+                        if let Ok(ic) = winit::window::Icon::from_rgba(rgba, 64, 64) {
+                            return Some(ic);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let rgba = blueorb_render_diveball_rgba(64);
+    winit::window::Icon::from_rgba(rgba, 64, 64).ok()
+}
+
+fn blueorb_render_diveball_rgba(size: usize) -> Vec<u8> {
+    let mut dst = vec![0u8; size * size * 4];
+    let szf = size as f32;
+    for y in 0..size {
+        let uy = ((y as f32 + 0.5) / szf) * 2.0 - 1.0;
+        for x in 0..size {
+            let ux = ((x as f32 + 0.5) / szf) * 2.0 - 1.0;
+            let idx = (y * size + x) * 4;
+            let r_ball = 0.88f32;
+            let d2 = ux * ux + uy * uy;
+            if d2 > r_ball * r_ball {
+                continue;
+            }
+            let d = d2.sqrt();
+            let aa = ((r_ball - d) * szf * 0.5).clamp(0.0, 1.0);
+            let nx = ux / r_ball;
+            let ny = -uy / r_ball;
+            let nz = (1.0 - (nx * nx + ny * ny).min(1.0)).sqrt();
+            let py = ny * 0.98 - nz * (-0.19);
+            let pz = ny * (-0.19) + nz * 0.98;
+            let clasp_ang = pz.clamp(-1.0, 1.0).acos();
+            let shade = (0.38 + 0.62 * (nx * -0.4 + ny * 0.56 + nz * 0.72).max(0.0)).clamp(0.0, 1.0);
+
+            let (r, g, b) = if clasp_ang < 0.11 {
+                (56.0, 189.0, 255.0)
+            } else if clasp_ang < 0.21 {
+                (238.0 * shade, 242.0 * shade, 248.0 * shade)
+            } else if clasp_ang < 0.28 || py.abs() < 0.07 {
+                (26.0, 30.0, 40.0)
+            } else if py > 0.0 {
+                let wave = 0.23 + 0.08 * (nx * 5.0).cos();
+                if (py - wave).abs() < 0.05 {
+                    (205.0, 240.0, 255.0)
+                } else if py > 0.55 {
+                    (64.0 * shade + 20.0, 168.0 * shade + 30.0, 248.0)
+                } else {
+                    (18.0 * shade + 8.0, 88.0 * shade + 24.0, 212.0 * shade + 40.0)
+                }
+            } else {
+                (238.0 * shade, 242.0 * shade, 248.0 * shade)
+            };
+            dst[idx] = r.clamp(0.0, 255.0) as u8;
+            dst[idx + 1] = g.clamp(0.0, 255.0) as u8;
+            dst[idx + 2] = b.clamp(0.0, 255.0) as u8;
+            dst[idx + 3] = (aa * 255.0) as u8;
+        }
+    }
+    dst
+}
+
+/// Smooth 2x EPX + bilinear squircle upscaler turning the ROM's official 48x48 SMDH icon into crisp HD RGBA.
+fn blueorb_upscale_smdh_rgba(src48: &[u8], out_size: usize) -> Vec<u8> {
+    let sim = |a: &[u8], b: &[u8]| -> bool {
+        (a[0] as i32 - b[0] as i32).abs() * 3
+            + (a[1] as i32 - b[1] as i32).abs() * 4
+            + (a[2] as i32 - b[2] as i32).abs() * 2
+            < 160
+    };
+    let px48 = |x: usize, y: usize| -> [u8; 4] {
+        let i = (y.min(47) * 48 + x.min(47)) * 4;
+        [src48[i], src48[i + 1], src48[i + 2], 255]
+    };
+    let mut s96 = vec![[0u8; 4]; 96 * 96];
+    for y in 0..48 {
+        for x in 0..48 {
+            let p = px48(x, y);
+            let a = px48(x, y.saturating_sub(1));
+            let b = px48(x + 1, y);
+            let c = px48(x.saturating_sub(1), y);
+            let d = px48(x, y + 1);
+            let blend = |q: [u8; 4], r: [u8; 4]| [
+                ((q[0] as u16 + r[0] as u16 + p[0] as u16 * 2) / 4) as u8,
+                ((q[1] as u16 + r[1] as u16 + p[1] as u16 * 2) / 4) as u8,
+                ((q[2] as u16 + r[2] as u16 + p[2] as u16 * 2) / 4) as u8,
+                255,
+            ];
+            s96[(y * 2) * 96 + x * 2] = if sim(&c, &a) && !sim(&c, &d) && !sim(&a, &b) { blend(c, a) } else { p };
+            s96[(y * 2) * 96 + x * 2 + 1] = if sim(&a, &b) && !sim(&c, &a) && !sim(&b, &d) { blend(a, b) } else { p };
+            s96[(y * 2 + 1) * 96 + x * 2] = if sim(&d, &c) && !sim(&b, &d) && !sim(&c, &a) { blend(d, c) } else { p };
+            s96[(y * 2 + 1) * 96 + x * 2 + 1] = if sim(&b, &d) && !sim(&a, &b) && !sim(&d, &c) { blend(b, d) } else { p };
+        }
+    }
+
+    let mut dst = vec![0u8; out_size * out_size * 4];
+    let szf = out_size as f32;
+    let rad = szf * 0.22;
+    for y in 0..out_size {
+        let yf = y as f32 + 0.5;
+        let gy = ((yf / szf) * 96.0 - 0.5).clamp(0.0, 95.0);
+        let y0 = gy.floor() as usize;
+        let y1 = (y0 + 1).min(95);
+        let ty = gy - y0 as f32;
+        for x in 0..out_size {
+            let xf = x as f32 + 0.5;
+            let gx = ((xf / szf) * 96.0 - 0.5).clamp(0.0, 95.0);
+            let x0 = gx.floor() as usize;
+            let x1 = (x0 + 1).min(95);
+            let tx = gx - x0 as f32;
+
+            let c00 = s96[y0 * 96 + x0];
+            let c10 = s96[y0 * 96 + x1];
+            let c01 = s96[y1 * 96 + x0];
+            let c11 = s96[y1 * 96 + x1];
+
+            let dx = if xf < rad { rad - xf } else if xf > szf - rad { xf - (szf - rad) } else { 0.0 };
+            let dy = if yf < rad { rad - yf } else if yf > szf - rad { yf - (szf - rad) } else { 0.0 };
+            let cd = (dx * dx + dy * dy).sqrt();
+            let alpha = ((rad + 0.5 - cd) * 255.0).round().clamp(0.0, 255.0) as u8;
+
+            let o = (y * out_size + x) * 4;
+            for ch in 0..3 {
+                let top = c00[ch] as f32 * (1.0 - tx) + c10[ch] as f32 * tx;
+                let bot = c01[ch] as f32 * (1.0 - tx) + c11[ch] as f32 * tx;
+                dst[o + ch] = (top * (1.0 - ty) + bot * ty).round().clamp(0.0, 255.0) as u8;
+            }
+            dst[o + 3] = alpha;
+        }
+    }
+    dst
+}
+
+fn blueorb_encode_png(size: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    use image::ImageEncoder;
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(rgba, size, size, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    Some(out)
+}
+
+/// Replaces the bundle's placeholder icon on disk with the user's official ROM SMDH icon once recompiled.
+fn blueorb_persist_official_bundle_icon(icon48: &[u8], game_title: &str) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(exe_dir) = exe.parent() else { return };
+
+    let rgba256 = blueorb_upscale_smdh_rgba(icon48, 256);
+    let Some(png256) = blueorb_encode_png(256, &rgba256) else { return };
+
+    #[cfg(target_os = "macos")]
+    {
+        if exe_dir.ends_with("Contents/MacOS") {
+            if let Some(contents) = exe_dir.parent() {
+                let res_dir = contents.join("Resources");
+                let stamp = res_dir.join(".official_icon_applied");
+                let icns_path = res_dir.join("AppIcon.icns");
+                if !stamp.is_file() && res_dir.is_dir() {
+                    let rgba512 = blueorb_upscale_smdh_rgba(icon48, 512);
+                    if let Some(png512) = blueorb_encode_png(512, &rgba512) {
+                        let total = 8 + (8 + png256.len()) + (8 + png512.len());
+                        let mut icns = Vec::with_capacity(total);
+                        icns.extend_from_slice(b"icns");
+                        icns.extend_from_slice(&(total as u32).to_be_bytes());
+                        icns.extend_from_slice(b"ic08");
+                        icns.extend_from_slice(&((8 + png256.len()) as u32).to_be_bytes());
+                        icns.extend_from_slice(&png256);
+                        icns.extend_from_slice(b"ic09");
+                        icns.extend_from_slice(&((8 + png512.len()) as u32).to_be_bytes());
+                        icns.extend_from_slice(&png512);
+                        if std::fs::write(&icns_path, icns).is_ok() {
+                            let _ = std::fs::write(&stamp, game_title.as_bytes());
+                            if let Some(bundle) = contents.parent() {
+                                let _ = std::process::Command::new("codesign")
+                                    .args(["--force", "--deep", "--sign", "-"])
+                                    .arg(bundle)
+                                    .status();
+                                let _ = std::process::Command::new("touch").arg(bundle).status();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let ico_path = exe_dir.join("AppIcon.ico");
+        let stamp = exe_dir.join(".official_icon_applied");
+        if !stamp.is_file() {
+            let mut ico = Vec::with_capacity(22 + png256.len());
+            ico.extend_from_slice(&[0, 0, 1, 0, 1, 0, 0, 0, 0, 0]);
+            ico.extend_from_slice(&1u16.to_le_bytes());
+            ico.extend_from_slice(&32u16.to_le_bytes());
+            ico.extend_from_slice(&(png256.len() as u32).to_le_bytes());
+            ico.extend_from_slice(&22u32.to_le_bytes());
+            ico.extend_from_slice(&png256);
+            if std::fs::write(&ico_path, ico).is_ok() {
+                let _ = std::fs::write(&stamp, game_title.as_bytes());
+                let safe_name: String = game_title
+                    .chars()
+                    .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+                    .collect();
+                let lnk_path = exe_dir.join(format!("{}.lnk", if safe_name.is_empty() { "Pokemon Alpha Sapphire" } else { &safe_name }));
+                let ps_script = format!(
+                    "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.WorkingDirectory='{}';$s.IconLocation='{}';$s.Save()",
+                    lnk_path.display().to_string().replace('\'', "''"),
+                    exe.display().to_string().replace('\'', "''"),
+                    exe_dir.display().to_string().replace('\'', "''"),
+                    ico_path.display().to_string().replace('\'', "''"),
+                );
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_script])
+                    .status();
+            }
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let png_path = exe_dir.join("AppIcon.png");
+        let stamp = exe_dir.join(".official_icon_applied");
+        if !stamp.is_file() && std::fs::write(&png_path, &png256).is_ok() {
+            let _ = std::fs::write(&stamp, game_title.as_bytes());
+            let desktop = format!(
+                "[Desktop Entry]\nType=Application\nName={}\nExec=\"{}\"\nIcon={}\nCategories=Game;\nTerminal=false\n",
+                game_title,
+                exe.display(),
+                png_path.display()
+            );
+            let _ = std::fs::write(exe_dir.join("BlueOrb.desktop"), desktop);
+        }
+    }
 }
 "#;
 
