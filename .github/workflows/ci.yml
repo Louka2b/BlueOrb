@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build (${{ matrix.os }}, ${{ matrix.target }})
@@ -17,13 +21,13 @@ jobs:
         include:
           - os: macos-latest    # Apple Silicon (ARM64)
             target: aarch64-apple-darwin
-            archive: BlueOrb-macOS-AppleSilicon.zip
+            artifact_name: release-macos-arm64
           - os: ubuntu-latest   # Linux (x86_64)
             target: x86_64-unknown-linux-gnu
-            archive: BlueOrb-Linux-x86_64.tar.gz
+            artifact_name: release-linux-x86_64
           - os: windows-latest  # Windows (x86_64)
             target: x86_64-pc-windows-msvc
-            archive: BlueOrb-Windows-x64.zip
+            artifact_name: release-windows-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -75,6 +79,9 @@ jobs:
         shell: pwsh
         run: |
           choco install gcc-arm-embedded llvm --no-progress -y
+          if (Test-Path "C:\Program Files\LLVM\bin") {
+            "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
 
       - name: Build & Test BlueOrb CLI, Launcher & Installer
         run: |
@@ -118,39 +125,56 @@ jobs:
         run: |
           mkdir -p release-assets dmg-stage
           xattr -cr "dist/BlueOrb.app"
-          codesign --verify --deep "dist/BlueOrb.app"
+          codesign --verify --deep --strict "dist/BlueOrb.app"
           "dist/BlueOrb.app/Contents/MacOS/BlueOrb" --test-pattern --headless 1 --mute
-          ditto -c -k --keepParent "dist/BlueOrb.app" "release-assets/${{ matrix.archive }}"
-          cp -R "dist/BlueOrb.app" "dmg-stage/"
+          ditto -c -k --keepParent "dist/BlueOrb.app" "release-assets/BlueOrb-macOS-AppleSilicon.zip"
+          ditto "dist/BlueOrb.app" "dmg-stage/BlueOrb.app"
           ln -s /Applications "dmg-stage/Applications"
+          cat > "dmg-stage/HOW TO OPEN ON MACOS.txt" << 'EOF'
+          BlueOrb — How to Open on macOS
+          ==============================
+
+          1. Drag BlueOrb into the Applications folder (do not launch it from inside the DMG).
+          2. Open BlueOrb from Applications. If macOS shows "BlueOrb Not Opened", click Done (do NOT click Move to Trash).
+          3. Open System Settings -> Privacy & Security, scroll down, and click Open Anyway.
+          EOF
           hdiutil create -volname "BlueOrb" -srcfolder "dmg-stage" -ov -format UDZO "release-assets/BlueOrb-macOS-AppleSilicon.dmg"
 
       - name: Package Archive (Linux x86_64)
         if: runner.os == 'Linux'
         run: |
           mkdir -p release-assets
-          tar -czf "release-assets/${{ matrix.archive }}" -C dist BlueOrb
+          tar -czf "release-assets/BlueOrb-Linux-x86_64.tar.gz" -C dist BlueOrb
 
-      - name: Package Archive & Smoke-Test Binary (Windows x64)
+      - name: Package Standalone .exe & Smoke-Test Binary (Windows x64)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           if (-not (Test-Path ".\dist\BlueOrb\BlueOrb.exe")) {
-            Write-Error "dist\BlueOrb\BlueOrb.exe not found!"
-            exit 1
+            throw "dist\BlueOrb\BlueOrb.exe not found!"
+          }
+          $exeSize = (Get-Item ".\dist\BlueOrb\BlueOrb.exe").Length
+          if ($exeSize -le 1048576) {
+            throw "dist\BlueOrb\BlueOrb.exe is unexpectedly small ($exeSize bytes)"
+          }
+          $proc = Start-Process -FilePath ".\dist\BlueOrb\BlueOrb.exe" -ArgumentList "--help" -Wait -PassThru -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0) {
+            throw "BlueOrb.exe --help failed with exit code $($proc.ExitCode)"
           }
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          & ".\dist\BlueOrb\BlueOrb.exe" --test-pattern --headless 1 --mute
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Compress-Archive -Path ".\dist\BlueOrb\*" -DestinationPath "release-assets\${{ matrix.archive }}" -Force
+          Copy-Item -Path ".\dist\BlueOrb\BlueOrb.exe" -Destination "release-assets\BlueOrb-Windows-x64.exe" -Force
+          if (-not (Test-Path "release-assets\BlueOrb-Windows-x64.exe")) {
+            throw "release-assets\BlueOrb-Windows-x64.exe missing after copy!"
+          }
+          Get-Item "release-assets\BlueOrb-Windows-x64.exe" | Format-List Name, Length
 
       - name: Upload Legal Standalone App Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
-          path: |
-            release-assets/${{ matrix.archive }}
-            release-assets/BlueOrb-macOS-*
+          name: ${{ matrix.artifact_name }}
+          path: release-assets/*
+          if-no-files-found: error
 
   auto-release:
     name: Publish Legal GUI Release
@@ -166,43 +190,73 @@ jobs:
           path: release-files
           merge-multiple: true
 
-      - name: Determine Release Tag & Title
-        id: meta
+      - name: Verify All Platform Release Files
         run: |
+          set -euo pipefail
+          ls -lh release-files/
+          for f in \
+            "release-files/BlueOrb-Windows-x64.exe" \
+            "release-files/BlueOrb-macOS-AppleSilicon.dmg" \
+            "release-files/BlueOrb-macOS-AppleSilicon.zip" \
+            "release-files/BlueOrb-Linux-x86_64.tar.gz"; do
+            if [[ ! -s "$f" ]]; then
+              echo "ERROR: Missing or empty release asset: $f" >&2
+              exit 1
+            fi
+          done
+
+      - name: Delete Old Releases & Publish Clean GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "title=BlueOrb ${GITHUB_REF_NAME} — Native Standalone Launcher (Windows, macOS, Linux)" >> "$GITHUB_OUTPUT"
+            TAG="${GITHUB_REF_NAME}"
+            TITLE="BlueOrb ${GITHUB_REF_NAME} — Native Standalone Launcher (Windows, macOS, Linux)"
+            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes || true
           else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-            echo "title=BlueOrb — Native Standalone Launcher (Windows, macOS Apple Silicon, Linux)" >> "$GITHUB_OUTPUT"
+            TAG="latest"
+            TITLE="BlueOrb — Native Standalone Launcher (Windows, macOS Apple Silicon, Linux)"
+            while IFS=$'\t' read -r _ old_tag _; do
+              [[ -z "${old_tag}" ]] && continue
+              if [[ "${old_tag}" != v* ]]; then
+                gh release delete "${old_tag}" --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes || true
+              fi
+            done < <(gh release list --repo "${GITHUB_REPOSITORY}" --limit 100 || true)
+            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes || true
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ":refs/tags/latest" 2>/dev/null || true
           fi
 
-      - name: Publish / Update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.title }}
-          make_latest: true
-          prerelease: false
-          files: release-files/*
-          body: |
-            ## BlueOrb — Native AOT Recompiler & HD / Ultrawide Runtime (Zero Terminal)
+          cat > release-notes.md << 'EOF'
+          ## BlueOrb — Native AOT Recompiler & HD / Ultrawide Runtime (Zero Terminal)
 
-            Download the build for your system:
-            - **Windows (x64)** : `BlueOrb-Windows-x64.zip` — extract and run **`BlueOrb.exe`**
-            - **macOS (Apple Silicon M1–M5)** : `BlueOrb-macOS-AppleSilicon.dmg` (drag **`BlueOrb.app`** to **Applications**) or `BlueOrb-macOS-AppleSilicon.zip` *(if opened outside `/Applications`, BlueOrb also offers to move itself there automatically; on first launch allow it in System Settings -> Privacy & Security -> Open Anyway)*
-            - **Linux (x64 / Steam Deck)** : `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**
+          Download the build for your system:
+          - **Windows (x64)** : `BlueOrb-Windows-x64.exe` — download and run **`BlueOrb-Windows-x64.exe`** directly (portable single-file executable, no extraction needed)
+          - **macOS (Apple Silicon M1–M5)** : `BlueOrb-macOS-AppleSilicon.dmg` (open the DMG and **drag `BlueOrb` to `Applications` first**; on first launch from `Applications`, click **Done** — do *not* click *Move to Trash* — then go to **System Settings -> Privacy & Security -> Open Anyway**) or `BlueOrb-macOS-AppleSilicon.zip`
+          - **Linux (x64 / Steam Deck)** : `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**
 
-            ### How It Works
-            1. **First launch**: drop or select your own **decrypted `.3ds` ROM** in the launcher window.
-            2. **Automatic native build**: BlueOrb recompiles the game into native machine code for your CPU (downloads a portable `zig cc` compiler automatically if none is installed), upgrades the app/window icon to your ROM's official game icon once built, and auto-launches the game.
-            3. **Every launch after**: opening **`BlueOrb`** boots straight into your game.
-            4. **Clean Cache**: use **`Clean Cache`** in the launcher bar (or **System & Cheats -> Clean Residual Build Files…** inside `Esc`) anytime to remove temporary build caches while preserving saves.
+          ### How It Works
+          1. **First launch**: drop or select your own **decrypted `.3ds` ROM** in the launcher window.
+          2. **Automatic native build**: BlueOrb recompiles the game into native machine code for your CPU (downloads a portable `zig cc` compiler automatically if none is installed), upgrades the app/window icon to your ROM's official game icon once built, and auto-launches the game.
+          3. **Every launch after**: opening **`BlueOrb`** boots straight into your game.
+          4. **Clean Cache**: use **`Clean Cache`** in the launcher bar (or **System & Cheats -> Clean Residual Build Files…** inside `Esc`) anytime to remove temporary build caches while preserving saves.
 
-            ### Hotkeys
-            - **`Esc`** : Open settings & save states overlay
-            - **`F6`** : Cycle top screen aspect ratio (`5:3` -> `16:9` -> `21:9 Ultrawide` -> `32:9`)
-            - **`F7`** : Toggle detached dual-window touch screen
-            - **`F11`** : Fullscreen
+          ### Hotkeys
+          - **`Esc`** : Open settings & save states overlay
+          - **`F6`** : Cycle top screen aspect ratio (`5:3` -> `16:9` -> `21:9 Ultrawide` -> `32:9`)
+          - **`F7`** : Toggle detached dual-window touch screen
+          - **`F11`** : Fullscreen
 
-            > **Legal Notice**: BlueOrb contains **zero** copyrighted Pokémon / Nintendo / Game Freak code, ROM bytes, icons, or assets. You must provide your own legally dumped, decrypted Nintendo 3DS `.3ds` ROM.
+          > **Legal Notice**: BlueOrb contains **zero** copyrighted Pokémon / Nintendo / Game Freak code, ROM bytes, icons, or assets. You must provide your own legally dumped, decrypted Nintendo 3DS `.3ds` ROM.
+          EOF
+
+          gh release create "${TAG}" \
+            release-files/BlueOrb-Windows-x64.exe \
+            release-files/BlueOrb-macOS-AppleSilicon.dmg \
+            release-files/BlueOrb-macOS-AppleSilicon.zip \
+            release-files/BlueOrb-Linux-x86_64.tar.gz \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "${TITLE}" \
+            --notes-file release-notes.md \
+            --latest

@@ -459,7 +459,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     let build_rs = zakuro_crate.join("build.rs");
     if build_rs.exists() {
         let src = read_lf(&build_rs).map_err(|e| e.to_string())?;
-        if !src.contains("BLUEORB_WIN_ICON") {
+        if !src.contains("C:/Program Files/LLVM/bin/llvm-rc.exe") {
             let win_icon_hook = r#"
     // BLUEORB_WIN_ICON
     if windows && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
@@ -473,13 +473,17 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 let res_file = out.join("blueorb_icon.res");
                 let ico_escaped = ico.display().to_string().replace('\\', "/");
                 let _ = std::fs::write(&rc_file, format!("1 ICON \"{ico_escaped}\"\n"));
-                let compiled = std::process::Command::new("llvm-rc")
-                    .args(["/FO"])
-                    .arg(&res_file)
-                    .arg(&rc_file)
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false)
+                let try_llvm_rc = |bin: &str| {
+                    std::process::Command::new(bin)
+                        .args(["/FO"])
+                        .arg(&res_file)
+                        .arg(&rc_file)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false)
+                };
+                let compiled = try_llvm_rc("llvm-rc")
+                    || try_llvm_rc("C:/Program Files/LLVM/bin/llvm-rc.exe")
                     || std::process::Command::new("rc")
                         .args(["/nologo", "/fo"])
                         .arg(&res_file)
@@ -494,8 +498,11 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         }
     }
 }"#;
-            if let Some(last_brace) = src.rfind('}') {
-                let mut patched = src[..last_brace].to_string();
+            let insert_at = src
+                .find("\n    // BLUEORB_WIN_ICON")
+                .or_else(|| src.rfind('}'));
+            if let Some(pos) = insert_at {
+                let mut patched = src[..pos].to_string();
                 patched.push_str(win_icon_hook);
                 patched.push('\n');
                 fs::write(&build_rs, patched).map_err(|e| e.to_string())?;

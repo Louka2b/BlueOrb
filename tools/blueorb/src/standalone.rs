@@ -872,7 +872,7 @@ pub fn build_clean_legal_app(project_root: &Path, launch: bool) -> Result<PathBu
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
-    <string>fr</string>
+    <string>en</string>
     <key>CFBundleDisplayName</key>
     <string>BlueOrb</string>
     <key>CFBundleExecutable</key>
@@ -898,18 +898,26 @@ pub fn build_clean_legal_app(project_root: &Path, launch: bool) -> Result<PathBu
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSCameraUsageDescription</key>
-    <string>Utilisé par les fonctionnalités photo en jeu.</string>
+    <string>Used by in-game camera features.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Utilisé par les fonctionnalités microphone en jeu.</string>
+    <string>Used by in-game microphone features.</string>
 </dict>
 </plist>
 "#;
             fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
 
             let dst_exe = macos_dir.join("BlueOrb");
+            let dst_mvk = fw_dir.join("libMoltenVK.dylib");
             fs::copy(&built_bin, &dst_exe).map_err(|e| e.to_string())?;
-            fs::copy(&moltenvk_dylib, fw_dir.join("libMoltenVK.dylib")).map_err(|e| e.to_string())?;
+            fs::copy(&moltenvk_dylib, &dst_mvk).map_err(|e| e.to_string())?;
             make_executable(&dst_exe);
+
+            run_checked(
+                Command::new("codesign")
+                    .args(["--force", "--sign", "-"])
+                    .arg(&dst_mvk),
+                "signature Apple Silicon de libMoltenVK.dylib",
+            )?;
 
             run_checked(
                 Command::new("codesign")

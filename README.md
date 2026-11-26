@@ -8,10 +8,10 @@
 
 ## Quick Start (Zero Terminal)
 
-1. Download the archive for your OS from **[GitHub Releases](../../releases)**:
-   - **Windows (`x64`)**: `BlueOrb-Windows-x64.zip` — extract and launch **`BlueOrb.exe`**
-   - **macOS (`ARM64` M1–M5)**: `BlueOrb-macOS-AppleSilicon.dmg` (drag **`BlueOrb.app`** to **Applications**) or `BlueOrb-macOS-AppleSilicon.zip` *(BlueOrb also offers to move itself into `/Applications` automatically; on first launch allow it under System Settings → Privacy & Security → Open Anyway)*
-   - **Linux (`x64` / Steam Deck)**: `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**
+1. Download the build for your OS from **[GitHub Releases](../../releases)**:
+   - **Windows (`x64`)**: `BlueOrb-Windows-x64.exe` — download and run **`BlueOrb-Windows-x64.exe`** directly (portable single-file executable, no extraction needed).
+   - **macOS (`ARM64` M1–M5)**: `BlueOrb-macOS-AppleSilicon.dmg` — open the DMG and **drag `BlueOrb` to `Applications` first**. On first launch from `Applications`, click **Done** (*Terminé* — do **not** click *Move to Trash*), then open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** (*Ouvrir quand même*).
+   - **Linux (`x64` / Steam Deck)**: `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**.
 2. **First Launch**:
    - Click **Select ROM…** (or drop your decrypted `.3ds` / `.cci` file onto the launcher window).
    - BlueOrb statically recompiles the game for your CPU (automatically fetching a portable `zig cc` compiler if needed), updates the app icon to your ROM's official icon once compiled, and launches straight into the game.
