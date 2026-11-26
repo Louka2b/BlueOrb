@@ -199,6 +199,7 @@ pub fn is_update_available(current_commit: &str, remote_commit: &str) -> bool {
     !rem.starts_with(&cur) && !cur.starts_with(&rem)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_sha256_bytes(bytes: &[u8], expected_hex: &str) -> Result<(), String> {
     let expected = expected_hex.trim().to_ascii_lowercase();
     if expected.len() != 64 {
@@ -542,6 +543,7 @@ fn install_and_spawn_relauncher(work_dir: &Path, archive_path: &Path) -> Result<
     let parent = exe.parent().ok_or_else(|| "Invalid executable directory.".to_owned())?;
     let staged_exe = parent.join("BlueOrb.exe.update_tmp");
     fs::copy(archive_path, &staged_exe)
+        .map(|_| ())
         .or_else(|_| fs::rename(archive_path, &staged_exe))
         .map_err(|e| format!("Could not write staged Windows executable: {e}"))?;
 
