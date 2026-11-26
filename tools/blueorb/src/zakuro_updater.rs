@@ -571,43 +571,33 @@ fn install_and_spawn_relauncher(work_dir: &Path, archive_path: &Path) -> Result<
 fn install_and_spawn_relauncher(work_dir: &Path, archive_path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
-    let exe = std::env::current_exe().map_err(|e| format!("Cannot locate running executable: {e}"))?;
-    let stage_dir = work_dir.join("staged");
-    fs::create_dir_all(&stage_dir).map_err(|e| format!("Staging dir error: {e}"))?;
-    let ok = Command::new("tar")
-        .arg("-xzf")
-        .arg(archive_path)
-        .arg("-C")
-        .arg(&stage_dir)
-        .status()
-        .map_err(|e| format!("Failed to extract Linux archive: {e}"))?;
-    if !ok.success() {
-        return Err("Could not unpack Linux update archive.".to_owned());
-    }
-    let staged_bin = stage_dir.join("BlueOrb");
-    if !staged_bin.is_file() {
-        return Err("Linux archive does not contain BlueOrb executable.".to_owned());
-    }
-    fs::set_permissions(&staged_bin, fs::Permissions::from_mode(0o755))
+    let target = std::env::var_os("APPIMAGE")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(
+            std::env::current_exe().map_err(|e| format!("Cannot locate running executable: {e}"))?,
+        );
+
+    fs::set_permissions(archive_path, fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("chmod failed: {e}"))?;
 
-    let backup = exe.with_extension("old_tmp");
+    let backup = target.with_extension("old_tmp");
     let _ = fs::remove_file(&backup);
-    fs::rename(&exe, &backup).map_err(|e| format!("Cannot replace current binary: {e}"))?;
-    if let Err(err) = fs::copy(&staged_bin, &exe) {
-        let _ = fs::rename(&backup, &exe);
-        return Err(format!("Could not install updated binary: {err}"));
+    fs::rename(&target, &backup).map_err(|e| format!("Cannot replace current AppImage: {e}"))?;
+    if let Err(err) = fs::copy(archive_path, &target) {
+        let _ = fs::rename(&backup, &target);
+        return Err(format!("Could not install updated AppImage: {err}"));
     }
-    let _ = fs::set_permissions(&exe, fs::Permissions::from_mode(0o755));
+    let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
     let _ = fs::remove_file(&backup);
     let _ = fs::remove_dir_all(work_dir);
 
-    Command::new(&exe)
+    Command::new(&target)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("Updated binary written, but relaunch failed: {e}"))?;
+        .map_err(|e| format!("Updated AppImage written, but relaunch failed: {e}"))?;
     Ok(())
 }
 
@@ -746,7 +736,7 @@ mod tests {
               "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             },
             "linux-x64": {
-              "file": "BlueOrb-Linux-x86_64.tar.gz",
+              "file": "BlueOrb-Linux-x86_64.AppImage",
               "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
             }
           }
@@ -756,7 +746,7 @@ mod tests {
         assert_eq!(m.tag, "latest");
         assert_eq!(m.windows_x64.unwrap().file, "BlueOrb-Windows-x64.exe");
         assert_eq!(m.macos_arm64.unwrap().file, "BlueOrb-macOS-AppleSilicon.zip");
-        assert_eq!(m.linux_x64.unwrap().file, "BlueOrb-Linux-x86_64.tar.gz");
+        assert_eq!(m.linux_x64.unwrap().file, "BlueOrb-Linux-x86_64.AppImage");
     }
 
     #[test]

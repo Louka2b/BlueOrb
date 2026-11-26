@@ -11,6 +11,7 @@ use std::path::Path;
 const LAUNCHER_BG_JPG: &[u8] = include_bytes!("launcher_bg.jpg");
 const ZAKURO_COOP_RS: &str = include_str!("zakuro_coop.rs");
 const ZAKURO_UPDATER_RS: &str = include_str!("zakuro_updater.rs");
+const ZAKURO_DISCORD_RS: &str = include_str!("zakuro_discord.rs");
 
 fn read_lf(path: &Path) -> Result<String, String> {
     fs::read_to_string(path)
@@ -20,11 +21,31 @@ fn read_lf(path: &Path) -> Result<String, String> {
 
 pub fn apply_sdk_enhancements(recomp_repo: &Path, zakuro_repo: &Path) -> Result<(), String> {
     patch_recomp_incremental(recomp_repo)?;
+    patch_zakuro_workspace_local_recomp(zakuro_repo, recomp_repo)?;
     patch_zakuro_oras_enhancements(zakuro_repo)?;
     patch_zakuro_core_coop_room(zakuro_repo)?;
     patch_zakuro_gpu_ultrawide_upscaler_antiflicker_and_dual_vulkan(zakuro_repo)?;
     patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo)?;
     Ok(())
+}
+
+/// Ensures `zakuro/Cargo.toml` compiles against our locally patched `../3dsrecomp` (incremental + no Windows cmd popups).
+fn patch_zakuro_workspace_local_recomp(zakuro_repo: &Path, recomp_repo: &Path) -> Result<(), String> {
+    if !recomp_repo.join("Cargo.toml").exists() {
+        return Ok(());
+    }
+    let cargo_toml = zakuro_repo.join("Cargo.toml");
+    if !cargo_toml.exists() {
+        return Ok(());
+    }
+    let mut src = read_lf(&cargo_toml).map_err(|e| e.to_string())?;
+    if src.contains("BLUEORB_PATCH_LOCAL_RECOMP") {
+        return Ok(());
+    }
+    src.push_str(
+        "\n# BLUEORB_PATCH_LOCAL_RECOMP\n[patch.\"https://github.com/fearkov/3dsrecomp\"]\nrecomp3ds = { path = \"../3dsrecomp\" }\nrecomp-abi = { path = \"../3dsrecomp/abi\" }\n",
+    );
+    fs::write(&cargo_toml, src).map_err(|e| e.to_string())
 }
 
 /// Extends `zakuro-core/src/room.rs` with live overworld `PlayerPresence` synchronization alongside local wireless UDS packets.
@@ -184,19 +205,16 @@ fn patch_zakuro_core_coop_room(zakuro_repo: &Path) -> Result<(), String> {
     fs::write(&room_rs, src).map_err(|e| e.to_string())
 }
 
-/// 1. Rend la compilation C de `3dsrecomp` incrémentale : si `.o` est plus récent que `.c` et non vide, on le réutilise.
+/// 1. Rend la compilation C de `3dsrecomp` incrémentale et masque les fenêtres console cmd sous Windows.
 fn patch_recomp_incremental(recomp_repo: &Path) -> Result<(), String> {
     let compile_rs = recomp_repo.join("src").join("compile.rs");
     if !compile_rs.exists() {
         return Ok(());
     }
-    let src = read_lf(&compile_rs).map_err(|e| e.to_string())?;
-    if src.contains("BLUEORB_INCREMENTAL_OBJ") {
-        return Ok(());
-    }
-
-    let needle = "                let path = dir.join(source);\n                let mut command = compiler.command();";
-    let replacement = r#"                let path = dir.join(source);
+    let mut src = read_lf(&compile_rs).map_err(|e| e.to_string())?;
+    if !src.contains("BLUEORB_INCREMENTAL_OBJ") {
+        let needle = "                let path = dir.join(source);\n                let mut command = compiler.command();";
+        let replacement = r#"                let path = dir.join(source);
                 // BLUEORB_INCREMENTAL_OBJ: réutiliser l'objet .o déjà compilé s'il est à jour
                 let obj_path = path.with_extension("o");
                 let up_to_date = std::fs::metadata(&obj_path)
@@ -215,8 +233,26 @@ fn patch_recomp_incremental(recomp_repo: &Path) -> Result<(), String> {
                 }
                 let mut command = compiler.command();"#;
 
-    if src.contains(needle) {
-        fs::write(&compile_rs, src.replace(needle, replacement)).map_err(|e| e.to_string())?;
+        if src.contains(needle) {
+            src = src.replace(needle, replacement);
+            fs::write(&compile_rs, &src).map_err(|e| e.to_string())?;
+        }
+    }
+
+    if !src.contains("BLUEORB_WIN_NO_WINDOW") {
+        src = src.replace(
+            "        let mut command = Command::new(&self.program);\n        command.args(&self.leading);",
+            "        // BLUEORB_WIN_NO_WINDOW\n        let mut command = Command::new(&self.program);\n        #[cfg(windows)]\n        {\n            use std::os::windows::process::CommandExt;\n            command.creation_flags(0x0800_0000);\n        }\n        command.args(&self.leading);",
+        );
+        src = src.replace(
+            "    command.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);",
+            "    command.creation_flags(BELOW_NORMAL_PRIORITY_CLASS | 0x0800_0000);",
+        );
+        src = src.replace(
+            "    let mut command = Command::new(&ar);",
+            "    let mut command = Command::new(&ar);\n    #[cfg(windows)]\n    {\n        use std::os::windows::process::CommandExt;\n        command.creation_flags(0x0800_0000);\n    }",
+        );
+        fs::write(&compile_rs, src).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -878,6 +914,16 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "            coop_sync_cutscenes: true,\n            auto_update: true,\n        }",
             );
         }
+        if !src.contains("discord_rpc") {
+            src = src.replace(
+                "    #[serde(default = \"blueorb_true\")]\n    pub auto_update: bool,\n}",
+                "    #[serde(default = \"blueorb_true\")]\n    pub auto_update: bool,\n    #[serde(default = \"blueorb_true\")]\n    pub discord_rpc: bool,\n    #[serde(default)]\n    pub discord_client_id: String,\n}",
+            );
+            src = src.replace(
+                "            auto_update: true,\n        }",
+                "            auto_update: true,\n            discord_rpc: true,\n            discord_client_id: String::new(),\n        }",
+            );
+        }
         fs::write(&settings_rs, src).map_err(|e| e.to_string())?;
     }
 
@@ -893,6 +939,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         ZAKURO_UPDATER_RS.replace("__BLUEORB_BUILD_COMMIT__", build_commit.trim()),
     )
     .map_err(|e| e.to_string())?;
+    fs::write(zakuro_src.join("discord.rs"), ZAKURO_DISCORD_RS).map_err(|e| e.to_string())?;
     let menus_rs = zakuro_src.join("menus.rs");
     if menus_rs.exists() {
         let mut src = read_lf(&menus_rs).map_err(|e| e.to_string())?;
@@ -1081,6 +1128,17 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             src = src.replace(
                 "                if console_secondary_button(ui, width, 32.0, \"Clean Residual Build Files…\", true) {\n                    actions.push(Action::CleanResiduals);\n                }",
                 "                if console_secondary_button(ui, width, 32.0, \"Clean Residual Build Files…\", true) {\n                    actions.push(Action::CleanResiduals);\n                }\n                ui.add_space(10.0);\n                console_card(ui, width, |ui, _| {\n                    actions.extend(crate::updater::draw_pause_update_section(ui, &self.update_status, &mut settings.auto_update));\n                });",
+            );
+            fs::write(&menus_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_DISCORD_UI_V1") {
+            src = src.replace(
+                "    pub update_status: crate::updater::UpdateStatus,",
+                "    // BLUEORB_DISCORD_UI_V1\n    pub update_status: crate::updater::UpdateStatus,\n    pub discord_state: crate::discord::RpcConnectionState,",
+            );
+            src = src.replace(
+                "                console_card(ui, width, |ui, _| {\n                    actions.extend(crate::updater::draw_pause_update_section(ui, &self.update_status, &mut settings.auto_update));\n                });",
+                "                console_card(ui, width, |ui, _| {\n                    actions.extend(crate::updater::draw_pause_update_section(ui, &self.update_status, &mut settings.auto_update));\n                });\n                ui.add_space(10.0);\n                console_card(ui, width, |ui, _| {\n                    crate::discord::draw_discord_rpc_section(ui, &mut settings.discord_rpc, &mut settings.discord_client_id, self.discord_state);\n                });",
             );
             fs::write(&menus_rs, src).map_err(|e| e.to_string())?;
         }
@@ -1688,7 +1746,49 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "            Action::TeleportToLeader => self.coop.request_manual_warp(),",
                 "            Action::TeleportToLeader => self.coop.request_manual_warp(),\n            Action::CheckUpdates => self.updater.start_check(true),\n            Action::InstallUpdate => self.updater.start_install(false),",
             );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_DISCORD_V1") {
+            src = src.replace(
+                "// BLUEORB_UPDATER_V1",
+                "// BLUEORB_DISCORD_V1\n// BLUEORB_UPDATER_V1\nmod discord;",
+            );
+            src = src.replace(
+                "    updater: updater::UpdaterRuntime,",
+                "    updater: updater::UpdaterRuntime,\n    discord: discord::DiscordRpcRuntime,",
+            );
+            src = src.replace(
+                "        updater: updater::UpdaterRuntime::new(),",
+                "        updater: updater::UpdaterRuntime::new(),\n        discord: discord::DiscordRpcRuntime::new(),",
+            );
+            src = src.replace(
+                "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());",
+                "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());\n        let rpc_frame = self.coop.build_frame(&self.settings);\n        self.discord.update(\n            self.settings.discord_rpc,\n            &self.settings.discord_client_id,\n            discord::RpcSnapshot {\n                in_game: self.game.is_some(),\n                zone_id: rpc_frame.local_zone,\n                in_battle: !rpc_frame.in_overworld,\n                in_cutscene: rpc_frame.local_in_cutscene,\n                party_count: rpc_frame.local_party_count,\n                coop_members: self.room.as_ref().map_or(0, |r| r.members().len()),\n                is_leader: rpc_frame.local_is_leader,\n            },\n        );\n        self.menus.discord_state = self.discord.state();",
+            );
             fs::write(&lib_rs, src).map_err(|e| e.to_string())?;
+        }
+    }
+
+    // 4h. `zig.rs` : empêcher les fenêtres cmd Windows lors du téléchargement/extraction de Zig (`tar`/`curl`/`zig --version`)
+    let zig_rs = zakuro_src.join("zig.rs");
+    if zig_rs.exists() {
+        let mut src = read_lf(&zig_rs).map_err(|e| e.to_string())?;
+        if src.contains("let cmd = hidden_command(program);") {
+            src = src.replace(
+                "let cmd = hidden_command(program);",
+                "let cmd = std::process::Command::new(program);",
+            );
+            fs::write(&zig_rs, &src).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_ZIG_NO_WINDOW") {
+            src = src.replace("Command::new(program)", "hidden_command(program)");
+            src = src.replace("Command::new(self.program())", "hidden_command(self.program())");
+            src = src.replace("Command::new(\"tar\")", "hidden_command(\"tar\")");
+            src = src.replace(
+                "use recomp3ds::compile::Compiler;",
+                "use recomp3ds::compile::Compiler;\n\n// BLUEORB_ZIG_NO_WINDOW\nfn hidden_command(program: &str) -> Command {\n    let cmd = std::process::Command::new(program);\n    #[cfg(windows)]\n    {\n        use std::os::windows::process::CommandExt;\n        let mut cmd = cmd;\n        cmd.creation_flags(0x0800_0000);\n        return cmd;\n    }\n    #[allow(unreachable_code)]\n    cmd\n}",
+            );
+            fs::write(&zig_rs, src).map_err(|e| e.to_string())?;
         }
     }
 

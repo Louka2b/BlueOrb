@@ -109,11 +109,36 @@ jobs:
           EOF
           hdiutil create -volname "BlueOrb" -srcfolder "dmg-stage" -ov -format UDZO "release-assets/BlueOrb-macOS-AppleSilicon.dmg"
 
-      - name: Package Archive (Linux x86_64)
+      - name: Package AppImage (Linux x86_64)
         if: runner.os == 'Linux'
         run: |
-          mkdir -p release-assets
-          tar -czf "release-assets/BlueOrb-Linux-x86_64.tar.gz" -C dist BlueOrb
+          set -euo pipefail
+          mkdir -p release-assets BlueOrb.AppDir/usr/bin
+          cp dist/BlueOrb/BlueOrb BlueOrb.AppDir/usr/bin/BlueOrb
+          chmod +x BlueOrb.AppDir/usr/bin/BlueOrb
+          cp dist/BlueOrb/AppIcon.png BlueOrb.AppDir/blueorb.png
+          ln -sf blueorb.png BlueOrb.AppDir/.DirIcon
+          cat > BlueOrb.AppDir/BlueOrb.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=BlueOrb
+          Comment=Native AOT Port for Pokemon Alpha Sapphire
+          Exec=BlueOrb
+          Icon=blueorb
+          Categories=Game;
+          Terminal=false
+          EOF
+          cat > BlueOrb.AppDir/AppRun << 'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/BlueOrb" "$@"
+          EOF
+          chmod +x BlueOrb.AppDir/AppRun
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -o appimagetool.AppImage
+          chmod +x appimagetool.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool.AppImage --no-appstream BlueOrb.AppDir release-assets/BlueOrb-Linux-x86_64.AppImage
+          chmod +x release-assets/BlueOrb-Linux-x86_64.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ./release-assets/BlueOrb-Linux-x86_64.AppImage --help >/dev/null
 
       - name: Package Standalone .exe & Smoke-Test Binary (Windows x64)
         if: runner.os == 'Windows'
@@ -167,7 +192,7 @@ jobs:
             "release-files/BlueOrb-Windows-x64.exe" \
             "release-files/BlueOrb-macOS-AppleSilicon.dmg" \
             "release-files/BlueOrb-macOS-AppleSilicon.zip" \
-            "release-files/BlueOrb-Linux-x86_64.tar.gz"; do
+            "release-files/BlueOrb-Linux-x86_64.AppImage"; do
             if [[ ! -s "$f" ]]; then
               echo "ERROR: Missing or empty release asset: $f" >&2
               exit 1
@@ -183,7 +208,7 @@ jobs:
           set -euo pipefail
           WIN_SHA=$(sha256sum release-files/BlueOrb-Windows-x64.exe | awk '{print $1}')
           MAC_SHA=$(sha256sum release-files/BlueOrb-macOS-AppleSilicon.zip | awk '{print $1}')
-          LIN_SHA=$(sha256sum release-files/BlueOrb-Linux-x86_64.tar.gz | awk '{print $1}')
+          LIN_SHA=$(sha256sum release-files/BlueOrb-Linux-x86_64.AppImage | awk '{print $1}')
           PUB_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           if [[ "${GH_REF}" == refs/tags/v* ]]; then
             MANIFEST_TAG="${GH_REF_NAME}"
@@ -205,7 +230,7 @@ jobs:
                 "sha256": "${MAC_SHA}"
               },
               "linux-x64": {
-                "file": "BlueOrb-Linux-x86_64.tar.gz",
+                "file": "BlueOrb-Linux-x86_64.AppImage",
                 "sha256": "${LIN_SHA}"
               }
             }
@@ -241,7 +266,7 @@ jobs:
           Download the build for your system:
           - **Windows (x64)** : `BlueOrb-Windows-x64.exe` — download and run **`BlueOrb-Windows-x64.exe`** directly (portable single-file executable, no extraction needed)
           - **macOS (Apple Silicon M1–M5)** : `BlueOrb-macOS-AppleSilicon.dmg` (open the DMG and **drag `BlueOrb` to `Applications` first**; on first launch from `Applications`, click **Done** — do *not* click *Move to Trash* — then go to **System Settings -> Privacy & Security -> Open Anyway**) or `BlueOrb-macOS-AppleSilicon.zip`
-          - **Linux (x64 / Steam Deck)** : `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**
+          - **Linux (x64 / Steam Deck)** : `BlueOrb-Linux-x86_64.AppImage` — `chmod +x` and run **`./BlueOrb-Linux-x86_64.AppImage`** directly
 
           ### How It Works
           1. **First launch**: drop or select your own **decrypted `.3ds` ROM** in the launcher window.
@@ -262,7 +287,7 @@ jobs:
             release-files/BlueOrb-Windows-x64.exe \
             release-files/BlueOrb-macOS-AppleSilicon.dmg \
             release-files/BlueOrb-macOS-AppleSilicon.zip \
-            release-files/BlueOrb-Linux-x86_64.tar.gz \
+            release-files/BlueOrb-Linux-x86_64.AppImage \
             release-files/update-manifest.json \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \

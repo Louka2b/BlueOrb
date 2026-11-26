@@ -11,7 +11,7 @@
 1. Download the build for your OS from **[GitHub Releases](../../releases)**:
    - **Windows (`x64`)**: `BlueOrb-Windows-x64.exe` — download and run **`BlueOrb-Windows-x64.exe`** directly (portable single-file executable, no extraction needed).
    - **macOS (`ARM64` M1–M5)**: `BlueOrb-macOS-AppleSilicon.dmg` — open the DMG and **drag `BlueOrb` to `Applications` first**. On first launch from `Applications`, click **Done** (*Terminé* — do **not** click *Move to Trash*), then open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** (*Ouvrir quand même*).
-   - **Linux (`x64` / Steam Deck)**: `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**.
+   - **Linux (`x64` / Steam Deck)**: `BlueOrb-Linux-x86_64.AppImage` — `chmod +x` and run **`./BlueOrb-Linux-x86_64.AppImage`** directly.
 2. **First Launch**:
    - Click **Select ROM…** (or drop your decrypted `.3ds` / `.cci` file onto the launcher window).
    - BlueOrb statically recompiles the game for your CPU (automatically fetching a portable `zig cc` compiler if needed), updates the app icon to your ROM's official icon once compiled, and launches straight into the game.
@@ -29,7 +29,8 @@
 - **Hor+ Ultrawide (`5:3`, `16:9`, `21:9`, `32:9`)**: Starts in native `5:3` stacked layout; press **`F6`** or open `Esc → Display` for true unstretched widescreen/ultrawide.
 - **Detachable Dual Windows**: Press **`F7`** to pop the bottom touch screen into a second independent window (zero-copy shared GPU surface + mouse touch input).
 - **Co-op Campaign & Multiplayer (`F4`)**: Host or join rooms via **LAN auto-discovery** or **IP:Port** to see friends live in Hoenn's 3D overworld, designate a **Chef (Leader)** whose zone changes automatically **teleport** party members beside them, **wait cleanly on story cutscenes** (with a clear on-screen wait notice until all players finish before syncing), **upgrade standard encounters into 2v2 Double Battles** while **leaving solo, tutorial, trainer 1v1, Sky, Multi, and scripted boss battles intact**, keep each player's **real save file & Pokémon** 100% untouched, and unlock campaign co-op automatically right after the tutorial (picking your starter). Also supports native 3DS PSS/local wireless battles & trades.
-- **Automatic In-Place Launcher Updates**: BlueOrb checks GitHub Releases (`update-manifest.json`) on startup, verifies SHA-256 checksums, swaps only the launcher binary/bundle automatically without re-downloading your ROM or saves, and restarts seamlessly.
+- **Automatic In-Place Launcher Updates**: BlueOrb checks GitHub Releases (`update-manifest.json`) on startup, verifies SHA-256 checksums, swaps only the launcher binary/bundle/AppImage automatically without re-downloading your ROM or saves, and restarts seamlessly.
+- **Discord Rich Presence**: Optional Discord status card (`Esc → System & Cheats`) showing the Pokémon Alpha Sapphire cover art, live Hoenn/Battle/Co-op activity, and a clickable link button to **BlueOrb on GitHub**.
 - **English by Default**: Clean native desktop UI, Xbox / PlayStation / Switch Pro controller auto-mapping, save states (`F5`/`F8`), and custom texture/cheat support.
 
 ---
