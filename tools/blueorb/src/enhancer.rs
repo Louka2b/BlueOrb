@@ -10,6 +10,7 @@ use std::path::Path;
 
 const LAUNCHER_BG_JPG: &[u8] = include_bytes!("launcher_bg.jpg");
 const ZAKURO_COOP_RS: &str = include_str!("zakuro_coop.rs");
+const ZAKURO_UPDATER_RS: &str = include_str!("zakuro_updater.rs");
 
 fn read_lf(path: &Path) -> Result<String, String> {
     fs::read_to_string(path)
@@ -867,12 +868,31 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "            coop_force_unlock: false,\n            coop_sync_cutscenes: true,\n        }",
             );
         }
+        if !src.contains("auto_update") {
+            src = src.replace(
+                "    #[serde(default = \"blueorb_true\")]\n    pub coop_sync_cutscenes: bool,\n}",
+                "    #[serde(default = \"blueorb_true\")]\n    pub coop_sync_cutscenes: bool,\n    #[serde(default = \"blueorb_true\")]\n    pub auto_update: bool,\n}",
+            );
+            src = src.replace(
+                "            coop_sync_cutscenes: true,\n        }",
+                "            coop_sync_cutscenes: true,\n            auto_update: true,\n        }",
+            );
+        }
         fs::write(&settings_rs, src).map_err(|e| e.to_string())?;
     }
 
-    // 4e. `menus.rs` & `coop.rs` : Assistant d'accueil + Co-op Multijoueur + Menu Pause accessible (`game`)
+    // 4e. `menus.rs`, `coop.rs` & `updater.rs` : Assistant d'accueil + Auto-Updater + Co-op Multijoueur + Menu Pause accessible (`game`)
     fs::write(zakuro_src.join("launcher_bg.jpg"), LAUNCHER_BG_JPG).map_err(|e| e.to_string())?;
     fs::write(zakuro_src.join("coop.rs"), ZAKURO_COOP_RS).map_err(|e| e.to_string())?;
+    let build_commit = std::env::var("GITHUB_SHA")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "dev".to_owned());
+    fs::write(
+        zakuro_src.join("updater.rs"),
+        ZAKURO_UPDATER_RS.replace("__BLUEORB_BUILD_COMMIT__", build_commit.trim()),
+    )
+    .map_err(|e| e.to_string())?;
     let menus_rs = zakuro_src.join("menus.rs");
     if menus_rs.exists() {
         let mut src = read_lf(&menus_rs).map_err(|e| e.to_string())?;
@@ -1042,6 +1062,25 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             src = src.replace(
                 "    ToggleCoopPreview,\n}",
                 "    // BLUEORB_COOP_ACTIONS_V2\n    ToggleCoopPreview,\n    SetCoopLeader(zakuro_core::room::Mac),\n    TeleportToLeader,\n}",
+            );
+            fs::write(&menus_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_UPDATER_UI_V1") {
+            src = src.replace(
+                "    TeleportToLeader,\n}",
+                "    // BLUEORB_UPDATER_UI_V1\n    TeleportToLeader,\n    CheckUpdates,\n    InstallUpdate,\n}",
+            );
+            src = src.replace(
+                "    pub room_password: String,",
+                "    pub room_password: String,\n    pub update_status: crate::updater::UpdateStatus,",
+            );
+            src = src.replace(
+                "                        if show_install_apps && launcher_glass_button(ui, \"Install to /Applications\", true) {\n                            actions.push(Action::InstallToApplications);\n                        }\n                    });",
+                "                        if show_install_apps && launcher_glass_button(ui, \"Install to /Applications\", true) {\n                            actions.push(Action::InstallToApplications);\n                        }\n                        if let Some(upd_act) = crate::updater::draw_launcher_update_bar(ui, &self.update_status) {\n                            actions.push(upd_act);\n                        }\n                    });",
+            );
+            src = src.replace(
+                "                if console_secondary_button(ui, width, 32.0, \"Clean Residual Build Files…\", true) {\n                    actions.push(Action::CleanResiduals);\n                }",
+                "                if console_secondary_button(ui, width, 32.0, \"Clean Residual Build Files…\", true) {\n                    actions.push(Action::CleanResiduals);\n                }\n                ui.add_space(10.0);\n                console_card(ui, width, |ui, _| {\n                    actions.extend(crate::updater::draw_pause_update_section(ui, &self.update_status, &mut settings.auto_update));\n                });",
             );
             fs::write(&menus_rs, src).map_err(|e| e.to_string())?;
         }
@@ -1621,6 +1660,33 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             src = src.replace(
                 "                actions.extend(coop::draw_multiplayer_window(ui.ctx(), &mut menus.multiplayer_open, &mut menus.room_password, settings, room.as_ref(), coop_ref));",
                 "                actions.extend(coop::draw_multiplayer_window(ui.ctx(), &mut menus.multiplayer_open, &mut menus.room_password, settings, room.as_ref(), room_conn, coop_ref));",
+            );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_UPDATER_V1") {
+            src = src.replace(
+                "// BLUEORB_COOP_MOD_V1",
+                "// BLUEORB_UPDATER_V1\n// BLUEORB_COOP_MOD_V1\nmod updater;",
+            );
+            src = src.replace(
+                "    coop: coop::CoopRuntime,",
+                "    coop: coop::CoopRuntime,\n    updater: updater::UpdaterRuntime,",
+            );
+            src = src.replace(
+                "        coop: coop::CoopRuntime::new(),",
+                "        coop: coop::CoopRuntime::new(),\n        updater: updater::UpdaterRuntime::new(),",
+            );
+            src = src.replace(
+                "                // the game the command line names starts on the device the presenter may lend the renderer, once there's one\n                self.start();",
+                "                // the game the command line names starts on the device the presenter may lend the renderer, once there's one\n                self.start();\n                self.updater.start_check(false);",
+            );
+            src = src.replace(
+                "        self.poll_jobs();",
+                "        self.poll_jobs();\n        self.menus.update_status = self.updater.status();\n        if self.updater.should_exit_for_restart() {\n            event_loop.exit();\n            return;\n        }\n        if self.settings.auto_update\n            && self.game.is_none()\n            && self.jobs.iter().all(|j| j.stage().finished())\n            && !self.updater.auto_started()\n            && matches!(self.updater.status(), updater::UpdateStatus::Available { .. })\n        {\n            self.updater.start_install(true);\n        }",
+            );
+            src = src.replace(
+                "            Action::TeleportToLeader => self.coop.request_manual_warp(),",
+                "            Action::TeleportToLeader => self.coop.request_manual_warp(),\n            Action::CheckUpdates => self.updater.start_check(true),\n            Action::InstallUpdate => self.updater.start_install(false),",
             );
             fs::write(&lib_rs, src).map_err(|e| e.to_string())?;
         }

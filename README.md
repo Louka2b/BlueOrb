@@ -29,6 +29,7 @@
 - **Hor+ Ultrawide (`5:3`, `16:9`, `21:9`, `32:9`)**: Starts in native `5:3` stacked layout; press **`F6`** or open `Esc → Display` for true unstretched widescreen/ultrawide.
 - **Detachable Dual Windows**: Press **`F7`** to pop the bottom touch screen into a second independent window (zero-copy shared GPU surface + mouse touch input).
 - **Co-op Campaign & Multiplayer (`F4`)**: Host or join rooms via **LAN auto-discovery** or **IP:Port** to see friends live in Hoenn's 3D overworld, designate a **Chef (Leader)** whose zone changes automatically **teleport** party members beside them, **wait cleanly on story cutscenes** (with a clear on-screen wait notice until all players finish before syncing), **upgrade standard encounters into 2v2 Double Battles** while **leaving solo, tutorial, trainer 1v1, Sky, Multi, and scripted boss battles intact**, keep each player's **real save file & Pokémon** 100% untouched, and unlock campaign co-op automatically right after the tutorial (picking your starter). Also supports native 3DS PSS/local wireless battles & trades.
+- **Automatic In-Place Launcher Updates**: BlueOrb checks GitHub Releases (`update-manifest.json`) on startup, verifies SHA-256 checksums, swaps only the launcher binary/bundle automatically without re-downloading your ROM or saves, and restarts seamlessly.
 - **English by Default**: Clean native desktop UI, Xbox / PlayStation / Switch Pro controller auto-mapping, save states (`F5`/`F8`), and custom texture/cheat support.
 
 ---
