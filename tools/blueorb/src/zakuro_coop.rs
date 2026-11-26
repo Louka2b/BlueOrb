@@ -244,6 +244,7 @@ pub struct CoopRuntime {
     pub leader_in_battle: bool,
     pub local_in_cutscene: bool,
     gm_slot_hint: u32,
+    models_offset_hint: u32,
     proj_offset_hint: Option<u32>,
     last_gm_scan: Instant,
     last_sample: Option<SampledWorld>,
@@ -256,7 +257,7 @@ pub struct CoopRuntime {
     peer_parties: HashMap<Mac, (u8, Vec<PartyMonSummary>)>,
     peer_cutscenes: HashMap<Mac, (bool, Instant)>,
     last_leader_zone: Option<u16>,
-    was_in_overworld: bool,
+    was_in_battle: bool,
     pending_warp: Option<PendingWarp>,
     warp_paused_by_cutscene: bool,
     last_warp_applied: Instant,
@@ -281,6 +282,7 @@ impl CoopRuntime {
             leader_in_battle: false,
             local_in_cutscene: false,
             gm_slot_hint: 0x0062_F7C4,
+            models_offset_hint: 0x369C,
             proj_offset_hint: None,
             last_gm_scan: now - Duration::from_secs(5),
             last_sample: None,
@@ -293,7 +295,7 @@ impl CoopRuntime {
             peer_parties: HashMap::new(),
             peer_cutscenes: HashMap::new(),
             last_leader_zone: None,
-            was_in_overworld: true,
+            was_in_battle: false,
             pending_warp: None,
             warp_paused_by_cutscene: false,
             last_warp_applied: now - Duration::from_secs(10),
@@ -315,7 +317,8 @@ impl CoopRuntime {
         self.local_party_count = 0;
         self.local_in_cutscene = false;
         self.last_leader_zone = None;
-        self.was_in_overworld = true;
+        self.was_in_battle = false;
+        self.models_offset_hint = 0x369C;
         self.pending_warp = None;
         self.warp_paused_by_cutscene = false;
         self.battle_double_applied = false;
@@ -369,6 +372,7 @@ impl CoopRuntime {
         let sampled = sample_oras_world(
             memory,
             &mut self.gm_slot_hint,
+            &mut self.models_offset_hint,
             &mut self.proj_offset_hint,
             &mut self.last_gm_scan,
             settings.coop_avatar_style,
@@ -494,12 +498,12 @@ impl CoopRuntime {
                 }
 
                 if unlocked && self.local_is_leader {
-                    if self.was_in_overworld && !world.in_overworld {
+                    if !self.was_in_battle && world.presence.in_battle {
                         conn.send_coop(CoopEvent::BattleStart {
                             zone_id: world.presence.zone_id,
                             is_trainer: false,
                         });
-                    } else if !self.was_in_overworld && world.in_overworld {
+                    } else if self.was_in_battle && !world.presence.in_battle {
                         conn.send_coop(CoopEvent::BattleEnd);
                     }
 
@@ -550,7 +554,7 @@ impl CoopRuntime {
             }
 
             // Battle transition & Solo/Scripted-Battle-Safe 2v2 Double Battle upgrade
-            if world.in_overworld {
+            if !world.presence.in_battle {
                 self.battle_double_applied = false;
             } else if unlocked
                 && settings.coop_double_battle
@@ -568,7 +572,7 @@ impl CoopRuntime {
                 }
             }
 
-            self.was_in_overworld = world.in_overworld;
+            self.was_in_battle = world.presence.in_battle;
         }
 
         if let Some((_, at)) = &self.status_banner {
@@ -1421,6 +1425,21 @@ pub fn draw_multiplayer_window(
                 .show(ui, |ui| {
                     ui.label(RichText::new(badge_title).size(12.5).strong().color(Color32::WHITE));
                     ui.label(RichText::new(badge_sub).size(11.0).color(Color32::from_rgb(204, 214, 228)));
+                    let telem = match &coop.last_sample {
+                        Some(w) if w.in_overworld => format!(
+                            "Telemetry: Overworld · Zone {} · Pos ({:.0}, {:.0}, {:.0})",
+                            w.presence.zone_id, w.presence.x, w.presence.y, w.presence.z
+                        ),
+                        Some(w) if w.presence.in_battle => {
+                            format!("Telemetry: In Battle · Zone {}", w.presence.zone_id)
+                        }
+                        Some(w) => format!(
+                            "Telemetry: Menu / Cutscene · Zone {}",
+                            w.presence.zone_id
+                        ),
+                        None => "Telemetry: Waiting for ORAS world state…".to_owned(),
+                    };
+                    ui.label(RichText::new(telem).size(10.5).monospace().color(Color32::from_rgb(154, 206, 255)));
                 });
             ui.add_space(8.0);
 
@@ -1735,7 +1754,87 @@ fn read_f32(mem: &mut Memory, vaddr: u32) -> Option<f32> {
 
 #[inline]
 fn is_heap_ptr(addr: u32) -> bool {
-    (0x0800_0000..0x1800_0000).contains(&addr) && (addr & 3) == 0
+    (addr & 3) == 0
+        && ((0x0800_0000..0x1000_0000).contains(&addr)
+            || (0x1400_0000..0x1C00_0000).contains(&addr)
+            || (0x3000_0000..0x4000_0000).contains(&addr))
+}
+
+fn is_battle_active(mem: &mut Memory, team_ptr: Option<u32>) -> bool {
+    let Some(tp) = team_ptr else {
+        return false;
+    };
+    let Some(cfg) = read_u32(mem, ORAS_BATTLE_MAIN_PROCESS.wrapping_add(0x38)).filter(|&p| is_heap_ptr(p)) else {
+        return false;
+    };
+    let Some(mgr) = read_u32(mem, ORAS_BATTLE_MAIN_PROCESS.wrapping_add(0x3C)).filter(|&p| is_heap_ptr(p)) else {
+        return false;
+    };
+    let _ = mgr;
+    read_u32(mem, cfg.wrapping_add(0x4C)) == Some(tp)
+}
+
+fn try_models_offset(mem: &mut Memory, model_mgr: u32, off: u32) -> Option<u32> {
+    let models_base = read_u32(mem, model_mgr.wrapping_add(off)).filter(|&p| is_heap_ptr(p))?;
+    for i in 0..32u32 {
+        let m = models_base.wrapping_add(i * 0xAB0);
+        let Some(flags0) = read_u32(mem, m.wrapping_add(0x04)) else { break };
+        if (flags0 & 1) == 0 {
+            continue;
+        }
+        let Some(id) = read_u16(mem, m.wrapping_add(0x0C)) else { continue };
+        if id == 0xFF {
+            let px = read_f32(mem, m.wrapping_add(0x114))?;
+            let py = read_f32(mem, m.wrapping_add(0x118))?;
+            let pz = read_f32(mem, m.wrapping_add(0x11C))?;
+            if px.abs() < 100_000.0 && py.abs() < 100_000.0 && pz.abs() < 100_000.0 {
+                return Some(m);
+            }
+        }
+    }
+    None
+}
+
+fn find_player_model(mem: &mut Memory, model_mgr: u32, offset_hint: &mut u32) -> Option<u32> {
+    if let Some(m) = try_models_offset(mem, model_mgr, *offset_hint) {
+        return Some(m);
+    }
+    for off in (0x3640u32..=0x3700).step_by(4).chain((0x1470u32..=0x14C0).step_by(4)) {
+        if let Some(m) = try_models_offset(mem, model_mgr, off) {
+            *offset_hint = off;
+            return Some(m);
+        }
+    }
+    None
+}
+
+fn fallback_overworld_camera(player: [f32; 3]) -> WorldCamera {
+    let eye = [player[0], player[1] + 150.0, player[2] + 170.0];
+    let target = [player[0], player[1] + 8.0, player[2]];
+    let f = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+    let flen = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt().max(1e-4);
+    let fwd = [f[0] / flen, f[1] / flen, f[2] / flen];
+    // Right = normalize(fwd x up(0,1,0)) = [-fwd.z, 0, fwd.x] normalized
+    let r_raw = [-fwd[2], 0.0, fwd[0]];
+    let rlen = (r_raw[0] * r_raw[0] + r_raw[2] * r_raw[2]).sqrt().max(1e-4);
+    let right = [r_raw[0] / rlen, 0.0, r_raw[2] / rlen];
+    let up = [
+        right[1] * fwd[2] - right[2] * fwd[1],
+        right[2] * fwd[0] - right[0] * fwd[2],
+        right[0] * fwd[1] - right[1] * fwd[0],
+    ];
+    let tx = -(right[0] * eye[0] + right[1] * eye[1] + right[2] * eye[2]);
+    let ty = -(up[0] * eye[0] + up[1] * eye[1] + up[2] * eye[2]);
+    let tz = fwd[0] * eye[0] + fwd[1] * eye[1] + fwd[2] * eye[2];
+    WorldCamera {
+        view: [
+            [right[0], right[1], right[2], tx],
+            [up[0], up[1], up[2], ty],
+            [-fwd[0], -fwd[1], -fwd[2], tz],
+        ],
+        proj: default_perspective_mtx(),
+        rotated_landscape: false,
+    }
 }
 
 /// Checks `GameManager -> EventManager (+0x18)` to detect active ORAS cutscenes / scripted events.
@@ -2044,6 +2143,7 @@ fn validate_gm_slot(mem: &mut Memory, slot_addr: u32) -> Option<(u32, u32, u32, 
 fn sample_oras_world(
     mem: &mut Memory,
     gm_slot_hint: &mut u32,
+    models_offset_hint: &mut u32,
     proj_offset_hint: &mut Option<u32>,
     last_gm_scan: &mut Instant,
     avatar_style: u8,
@@ -2071,9 +2171,10 @@ fn sample_oras_world(
     let (team_ptr, party_count, party_mons) = read_party_summary(mem, data_mgr);
 
     let model_mgr = read_u32(mem, data_mgr.wrapping_add(0x20)).filter(|&p| is_heap_ptr(p));
-    let models = model_mgr.and_then(|mm| read_u32(mem, mm.wrapping_add(0x369C)).filter(|&p| is_heap_ptr(p)));
+    let player_slot = model_mgr.and_then(|mm| find_player_model(mem, mm, models_offset_hint));
 
-    let Some(models_base) = models else {
+    let Some(player_base) = player_slot else {
+        let in_battle = is_battle_active(mem, team_ptr);
         return Some(SampledWorld {
             presence: PlayerPresence {
                 zone_id,
@@ -2083,7 +2184,7 @@ fn sample_oras_world(
                 yaw: 0.0,
                 speed: 0.0,
                 avatar_style,
-                in_battle: true,
+                in_battle,
             },
             in_overworld: false,
             in_cutscene,
@@ -2096,21 +2197,6 @@ fn sample_oras_world(
         });
     };
 
-    let mut player_slot = None;
-    for i in 0..32u32 {
-        let m = models_base.wrapping_add(i * 0xAB0);
-        let Some(flags0) = read_u32(mem, m.wrapping_add(0x04)) else { break };
-        if (flags0 & 1) == 0 {
-            continue;
-        }
-        let Some(id) = read_u16(mem, m.wrapping_add(0x0C)) else { continue };
-        if id == 0xFF {
-            player_slot = Some(m);
-            break;
-        }
-    }
-
-    let player_base = player_slot?;
     let px = read_f32(mem, player_base.wrapping_add(0x114))?;
     let py = read_f32(mem, player_base.wrapping_add(0x118))?;
     let pz = read_f32(mem, player_base.wrapping_add(0x11C))?;
@@ -2126,43 +2212,50 @@ fn sample_oras_world(
     let speed = mx.hypot(mz);
 
     let renderer = read_u32(mem, map_mgr.wrapping_add(0x100)).filter(|&p| is_heap_ptr(p));
-    let stereo_cam = renderer.and_then(|r| read_u32(mem, r.wrapping_add(0xAA4)).filter(|&p| is_heap_ptr(p)));
+    let stereo_cam = renderer.and_then(|r| {
+        read_u32(mem, r.wrapping_add(0xAA4))
+            .filter(|&p| is_heap_ptr(p))
+            .or_else(|| read_u32(mem, r.wrapping_add(0xAB8)).filter(|&p| is_heap_ptr(p)))
+    });
 
-    let camera = stereo_cam.and_then(|sc| {
-        let view = read_mtx34(mem, sc.wrapping_add(0x34)).filter(|v| validate_view_matrix(v, [px, py + 9.0, pz]))?;
-        let cam_p = world_to_camera(&view, [px, py + 9.0, pz]);
-        let left_cam = read_u32(mem, sc.wrapping_add(0x98)).filter(|&p| is_heap_ptr(p));
+    let camera = stereo_cam
+        .and_then(|sc| {
+            let view = read_mtx34(mem, sc.wrapping_add(0x34)).filter(|v| validate_view_matrix(v, [px, py + 9.0, pz]))?;
+            let cam_p = world_to_camera(&view, [px, py + 9.0, pz]);
+            let left_cam = read_u32(mem, sc.wrapping_add(0x98)).filter(|&p| is_heap_ptr(p));
 
-        let mut resolved_proj = None;
-        if let Some(lc) = left_cam {
-            if let Some(off) = *proj_offset_hint {
-                if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
-                    if let Some(rot) = validate_proj_matrix(&pm, cam_p) {
-                        resolved_proj = Some((pm, rot));
-                    }
-                }
-            }
-            if resolved_proj.is_none() {
-                for off in (0x00u32..=0x180).step_by(4) {
+            let mut resolved_proj = None;
+            if let Some(lc) = left_cam {
+                if let Some(off) = *proj_offset_hint {
                     if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
                         if let Some(rot) = validate_proj_matrix(&pm, cam_p) {
-                            *proj_offset_hint = Some(off);
                             resolved_proj = Some((pm, rot));
-                            break;
+                        }
+                    }
+                }
+                if resolved_proj.is_none() {
+                    for off in (0x00u32..=0x180).step_by(4) {
+                        if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
+                            if let Some(rot) = validate_proj_matrix(&pm, cam_p) {
+                                *proj_offset_hint = Some(off);
+                                resolved_proj = Some((pm, rot));
+                                break;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let (proj, rotated_landscape) = resolved_proj.unwrap_or_else(|| (default_perspective_mtx(), false));
-        Some(WorldCamera {
-            view,
-            proj,
-            rotated_landscape,
+            let (proj, rotated_landscape) = resolved_proj.unwrap_or_else(|| (default_perspective_mtx(), false));
+            Some(WorldCamera {
+                view,
+                proj,
+                rotated_landscape,
+            })
         })
-    });
+        .or_else(|| Some(fallback_overworld_camera([px, py, pz])));
 
+    let in_battle = is_battle_active(mem, team_ptr);
     Some(SampledWorld {
         presence: PlayerPresence {
             zone_id,
@@ -2172,9 +2265,9 @@ fn sample_oras_world(
             yaw,
             speed,
             avatar_style,
-            in_battle: false,
+            in_battle,
         },
-        in_overworld: true,
+        in_overworld: !in_battle,
         in_cutscene,
         party_count,
         party_mons,
@@ -2235,6 +2328,31 @@ mod tests {
         assert!(!should_upgrade_battle_to_double(3, 0, false, 1, false, false, false, false, true));
         // Native non-single formats (Double/Triple/Rotation/Horde) stay untouched
         assert!(!should_upgrade_battle_to_double(3, 1, true, 2, false, false, false, false, false));
+    }
+
+    #[test]
+    fn heap_ptr_accepts_app_and_new3ds_linear_heaps() {
+        assert!(is_heap_ptr(0x0800_0000));
+        assert!(is_heap_ptr(0x0C12_3450));
+        assert!(is_heap_ptr(0x1400_0000));
+        assert!(is_heap_ptr(0x1A00_1200));
+        assert!(is_heap_ptr(0x3000_0000));
+        assert!(is_heap_ptr(0x38AB_CDEF & !3));
+        assert!(!is_heap_ptr(0));
+        assert!(!is_heap_ptr(0x0800_0002));
+        assert!(!is_heap_ptr(0x0010_0000));
+    }
+
+    #[test]
+    fn fallback_camera_projects_nearby_friend() {
+        let local = [100.0, 0.0, 100.0];
+        let friend = [120.0, 0.0, 100.0];
+        let cam = fallback_overworld_camera(local);
+        let top = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 480.0));
+        let (pt, depth) = project_point(&cam, friend, top, 1.0).unwrap();
+        assert!(top.contains(pt));
+        assert!(pt.x > top.center().x);
+        assert!(depth < -50.0);
     }
 
     #[test]
