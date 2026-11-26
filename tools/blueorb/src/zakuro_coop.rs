@@ -163,6 +163,8 @@ pub(crate) struct WorldCamera {
     view: [[f32; 4]; 3],
     proj: [[f32; 4]; 4],
     rotated_landscape: bool,
+    right_sign: f32,
+    up_sign: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +186,7 @@ struct PendingWarp {
     x: f32,
     y: f32,
     z: f32,
+    manual: bool,
     issued_at: Instant,
 }
 
@@ -232,6 +235,9 @@ pub struct CoopFrame {
     pub banner: Option<String>,
     pub local_party: Vec<PartyMonSummary>,
     pub partner_parties: Vec<(String, bool, Vec<PartyMonSummary>)>,
+    pub room_connected: bool,
+    pub room_name: Option<String>,
+    pub room_members: Vec<(String, Mac, bool, bool)>,
 }
 
 pub struct CoopRuntime {
@@ -330,31 +336,44 @@ impl CoopRuntime {
         is_tutorial_unlocked(self.local_party_count, settings.coop_force_unlock)
     }
 
-    /// Manually queues a teleport to the current Chef/Leader's zone & position.
+    /// Manually queues a teleport to the Chef/Leader (or to the teammate if you are the Chef).
     pub fn request_manual_warp(&mut self) {
-        if self.local_is_leader {
-            self.set_banner("You are already the Chef (Leader).");
+        if let Some(l_mac) = self.leader_mac.filter(|_| !self.local_is_leader) {
+            self.request_warp_to_peer(l_mac);
             return;
         }
-        let Some(l_mac) = self.leader_mac else {
-            self.set_banner("No Chef connected in this room.");
+        if let Some((&peer_mac, _)) = self.smoothed.iter().next() {
+            self.request_warp_to_peer(peer_mac);
+        } else {
+            self.set_banner("No teammate connected with position data yet.");
+        }
+    }
+
+    /// Manually queues a teleport directly to a specific room teammate (`target_mac`).
+    pub fn request_warp_to_peer(&mut self, target_mac: Mac) {
+        let Some(remote) = self.smoothed.get(&target_mac).cloned() else {
+            self.set_banner("Waiting for teammate telemetry… Make sure both games are unpaused.");
             return;
         };
-        if let Some(remote) = self.smoothed.get(&l_mac) {
-            self.pending_warp = Some(PendingWarp {
-                zone_id: remote.presence.zone_id,
-                x: remote.presence.x,
-                y: remote.presence.y,
-                z: remote.presence.z,
-                issued_at: Instant::now(),
-            });
+        if !(1..536).contains(&remote.presence.zone_id) {
             self.set_banner(format!(
-                "Teleporting to Chef ({}) in Zone {}…",
+                "{} is not in Hoenn overworld yet (Zone {}).",
                 remote.nickname, remote.presence.zone_id
             ));
-        } else {
-            self.set_banner("Waiting for Chef's position telemetry…");
+            return;
         }
+        self.pending_warp = Some(PendingWarp {
+            zone_id: remote.presence.zone_id,
+            x: remote.presence.x,
+            y: remote.presence.y,
+            z: remote.presence.z,
+            manual: true,
+            issued_at: Instant::now(),
+        });
+        self.set_banner(format!(
+            "Teleporting to {} (Zone {})…",
+            remote.nickname, remote.presence.zone_id
+        ));
     }
 
     fn set_banner(&mut self, msg: impl Into<String>) {
@@ -395,6 +414,7 @@ impl CoopRuntime {
                                 x,
                                 y,
                                 z,
+                                manual: false,
                                 issued_at: Instant::now(),
                             });
                             if !self.local_in_cutscene {
@@ -424,6 +444,7 @@ impl CoopRuntime {
                                             x: remote.x,
                                             y: remote.y,
                                             z: remote.z,
+                                            manual: false,
                                             issued_at: Instant::now(),
                                         });
                                     }
@@ -527,10 +548,19 @@ impl CoopRuntime {
                 }
             }
 
-            // Execute pending Auto-TP ONLY when cutscenes have finished on all sides
-            if unlocked && world.in_overworld {
+            // Execute Auto-TP when unlocked & cutscenes clear; manual TP executes whenever local player is free in overworld
+            if world.in_overworld {
                 if let Some(mut warp) = self.pending_warp.clone() {
-                    if sync_blocked {
+                    let allowed = warp.manual || unlocked;
+                    let blocked = if warp.manual {
+                        world.in_cutscene
+                    } else {
+                        sync_blocked
+                    };
+                    if !allowed {
+                        self.pending_warp = None;
+                        self.set_banner("Tutorial lock active — pick your starter or enable Override in F4.");
+                    } else if blocked {
                         self.warp_paused_by_cutscene = true;
                         // Keep warp fresh until cutscenes complete
                         warp.issued_at = Instant::now();
@@ -547,8 +577,11 @@ impl CoopRuntime {
                         if is_next_map_idle(memory, world.map_mgr) {
                             teleport_player_coords(memory, player_slot, [warp.x + 18.0, warp.y, warp.z]);
                             self.pending_warp = None;
-                            self.set_banner(format!("Teleported to Chef (Zone {})!", warp.zone_id));
+                            self.set_banner(format!("Teleported to Zone {}!", warp.zone_id));
                         }
+                    } else if warp.manual {
+                        self.pending_warp = None;
+                        self.set_banner("Already in the same zone — waiting for local player model telemetry.");
                     }
                 }
             }
@@ -573,6 +606,20 @@ impl CoopRuntime {
             }
 
             self.was_in_battle = world.presence.in_battle;
+        } else if let Some(conn) = room {
+            if self.last_presence_sent.elapsed() >= Duration::from_millis(500) {
+                conn.send_presence(PlayerPresence {
+                    zone_id: 0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    yaw: 0.0,
+                    speed: 0.0,
+                    avatar_style: settings.coop_avatar_style,
+                    in_battle: false,
+                });
+                self.last_presence_sent = Instant::now();
+            }
         }
 
         if let Some((_, at)) = &self.status_banner {
@@ -609,6 +656,26 @@ impl CoopRuntime {
         if let Some(conn) = room {
             self.leader_mac = conn.leader();
             self.local_is_leader = conn.is_leader();
+
+            // Keep presence alive while paused or on title screen so partners stay visible in HUD & room state
+            if self.last_presence_sent.elapsed() >= Duration::from_millis(800) {
+                let fallback_presence = self
+                    .last_sample
+                    .as_ref()
+                    .map(|s| s.presence.clone())
+                    .unwrap_or(PlayerPresence {
+                        zone_id: 0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                        yaw: 0.0,
+                        speed: 0.0,
+                        avatar_style: 0,
+                        in_battle: false,
+                    });
+                conn.send_presence(fallback_presence);
+                self.last_presence_sent = now;
+            }
 
             let remotes = conn.remote_players();
             let mut active_macs = Vec::with_capacity(remotes.len());
@@ -669,7 +736,7 @@ impl CoopRuntime {
         }
     }
 
-    pub fn build_frame(&self, settings: &Settings) -> CoopFrame {
+    pub fn build_frame(&self, settings: &Settings, room: Option<&Connection>) -> CoopFrame {
         let mut waiting_for_cutscene = Vec::new();
         let mut peers: Vec<RenderPeer> = self
             .smoothed
@@ -751,6 +818,20 @@ impl CoopRuntime {
             })
             .collect();
 
+        let (room_connected, room_name, room_members) = match room {
+            Some(conn) => {
+                let local_mac = conn.mac();
+                let leader = conn.leader();
+                let list = conn
+                    .members()
+                    .into_iter()
+                    .map(|m| (m.nickname, m.mac, leader == Some(m.mac), m.mac == local_mac))
+                    .collect();
+                (true, Some(conn.room().to_owned()), list)
+            }
+            None => (false, None, Vec::new()),
+        };
+
         CoopFrame {
             local_zone,
             local_pos,
@@ -767,6 +848,9 @@ impl CoopRuntime {
             banner: self.status_banner.as_ref().map(|(s, _)| s.clone()),
             local_party,
             partner_parties,
+            room_connected,
+            room_name,
+            room_members,
         }
     }
 
@@ -888,14 +972,16 @@ pub fn top_screen_rect_points(
 /// Renders other players in the 3D overworld, Chef crown tags, Co-op Campaign HUD,
 /// synchronized Double Battle ally squad status, and cutscene wait notices.
 pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFrame, settings: &Settings) {
-    if frame.peers.is_empty()
+    if !frame.room_connected
+        && frame.peers.is_empty()
         && frame.local_zone.is_none()
         && frame.banner.is_none()
         && frame.waiting_for_cutscene.is_empty()
     {
         return;
     }
-    if !frame.peers.is_empty()
+    if frame.room_connected
+        || !frame.peers.is_empty()
         || frame.banner.is_some()
         || !frame.waiting_for_cutscene.is_empty()
         || frame.warp_paused_by_cutscene
@@ -1044,30 +1130,50 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
             });
     }
 
-    if settings.coop_show_hud && !frame.peers.is_empty() {
-        let hud_w = 210.0_f32.min((top_rect.width() * 0.42).max(166.0));
+    if settings.coop_show_hud && (frame.room_connected || !frame.peers.is_empty()) {
+        let hud_w = 226.0_f32.min((top_rect.width() * 0.44).max(176.0));
         let hud_pos = Pos2::new(top_rect.right() - hud_w - 10.0, top_rect.top() + 10.0);
+        let remote_members: Vec<_> = frame.room_members.iter().filter(|m| !m.3).collect();
+        let has_teammate = !frame.peers.is_empty() || !remote_members.is_empty();
         egui::Area::new(egui::Id::new("blueorb_coop_hud"))
             .order(egui::Order::Foreground)
             .fixed_pos(hud_pos)
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::NONE
-                    .fill(Color32::from_rgba_unmultiplied(10, 18, 34, 206))
-                    .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(128, 198, 255, 86)))
+                    .fill(Color32::from_rgba_unmultiplied(10, 18, 34, 212))
+                    .stroke(Stroke::new(
+                        1.0,
+                        if has_teammate {
+                            Color32::from_rgba_unmultiplied(100, 228, 166, 128)
+                        } else {
+                            Color32::from_rgba_unmultiplied(245, 192, 92, 118)
+                        },
+                    ))
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(Margin::symmetric(10, 7))
                     .show(ui, |ui| {
                         ui.set_width(hud_w - 20.0);
                         ui.horizontal(|ui| {
                             let (dot_r, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
-                            ui.painter().circle_filled(dot_r.center(), 3.5, Color32::from_rgb(64, 224, 148));
+                            ui.painter().circle_filled(
+                                dot_r.center(),
+                                3.5,
+                                if has_teammate {
+                                    Color32::from_rgb(64, 224, 148)
+                                } else {
+                                    Color32::from_rgb(245, 196, 86)
+                                },
+                            );
+                            let total_count = frame.room_members.len().max(frame.peers.len() + usize::from(frame.room_connected));
                             let title = if !frame.in_overworld {
                                 "Co-op Battle".to_owned()
+                            } else if !has_teammate {
+                                "Room Open (1/1 — Waiting)".to_owned()
                             } else if frame.local_is_leader {
-                                format!("Co-op Chef ({})", frame.peers.len())
+                                format!("Co-op Chef ({total_count} online)")
                             } else {
-                                format!("Co-op Online ({})", frame.peers.len())
+                                format!("Co-op Linked ({total_count} online)")
                             };
                             ui.label(
                                 RichText::new(title)
@@ -1076,55 +1182,90 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
                                     .color(Color32::from_rgb(232, 242, 255)),
                             );
                         });
+                        if let Some(lz) = frame.local_zone {
+                            if lz > 0 {
+                                ui.label(
+                                    RichText::new(format!("You: Zone {lz}"))
+                                        .size(9.8)
+                                        .monospace()
+                                        .color(Color32::from_rgb(144, 178, 218)),
+                                );
+                            }
+                        }
+                        if !has_teammate {
+                            ui.label(
+                                RichText::new("Press F4 to share IP or join mate")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(196, 208, 228)),
+                            );
+                        }
                         if !frame.tutorial_unlocked {
                             ui.label(
-                                RichText::new("Tutorial lock — pick starter")
+                                RichText::new("Tutorial lock — pick starter or override")
                                     .size(10.0)
                                     .color(Color32::from_rgb(252, 204, 108)),
                             );
                         }
-                        ui.add_space(4.0);
-                        for peer in frame.peers.iter().take(4) {
-                            let pal = avatar_palette(peer.avatar_style);
-                            let same_zone = frame.local_zone == Some(peer.zone_id);
-                            ui.horizontal(|ui| {
-                                let (sw, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
-                                ui.painter().circle_filled(sw.center(), 3.5, pal.cap);
-                                let display = if peer.is_leader {
-                                    format!("[Chef] {}", peer.nickname)
-                                } else {
-                                    peer.nickname.clone()
-                                };
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(display)
-                                            .size(11.0)
-                                            .color(if peer.is_leader {
-                                                Color32::from_rgb(255, 228, 138)
-                                            } else {
-                                                Color32::from_rgb(220, 230, 246)
-                                            }),
-                                    )
-                                    .truncate(),
-                                );
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let p_tag = if peer.party_count > 0 {
-                                        format!(" · {}P", peer.party_count)
+                        ui.add_space(3.0);
+                        if !frame.peers.is_empty() {
+                            for peer in frame.peers.iter().take(4) {
+                                let pal = avatar_palette(peer.avatar_style);
+                                let same_zone = frame.local_zone.is_some_and(|lz| lz > 0 && lz == peer.zone_id);
+                                ui.horizontal(|ui| {
+                                    let (sw, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                                    ui.painter().circle_filled(sw.center(), 3.5, pal.cap);
+                                    let display = if peer.is_leader {
+                                        format!("[Chef] {}", peer.nickname)
                                     } else {
-                                        String::new()
+                                        peer.nickname.clone()
                                     };
-                                    let (tag, col) = if peer.in_cutscene {
-                                        (format!("Cutscene{p_tag}"), Color32::from_rgb(255, 214, 102))
-                                    } else if peer.in_battle {
-                                        (format!("Battle{p_tag}"), Color32::from_rgb(252, 168, 112))
-                                    } else if same_zone {
-                                        (format!("Nearby{p_tag}"), Color32::from_rgb(122, 238, 174))
-                                    } else {
-                                        (format!("Z{}{p_tag}", peer.zone_id), Color32::from_rgb(142, 164, 194))
-                                    };
-                                    ui.label(RichText::new(tag).size(10.0).monospace().color(col));
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(display)
+                                                .size(11.0)
+                                                .color(if peer.is_leader {
+                                                    Color32::from_rgb(255, 228, 138)
+                                                } else {
+                                                    Color32::from_rgb(220, 230, 246)
+                                                }),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let p_tag = if peer.party_count > 0 {
+                                            format!(" · {}P", peer.party_count)
+                                        } else {
+                                            String::new()
+                                        };
+                                        let (tag, col) = if peer.in_cutscene {
+                                            (format!("Cutscene{p_tag}"), Color32::from_rgb(255, 214, 102))
+                                        } else if peer.in_battle {
+                                            (format!("Battle{p_tag}"), Color32::from_rgb(252, 168, 112))
+                                        } else if peer.zone_id == 0 {
+                                            ("Title/Menu".to_owned(), Color32::from_rgb(176, 188, 210))
+                                        } else if same_zone {
+                                            (format!("Same Zone{p_tag}"), Color32::from_rgb(122, 238, 174))
+                                        } else {
+                                            (format!("Z{}{p_tag}", peer.zone_id), Color32::from_rgb(142, 184, 234))
+                                        };
+                                        ui.label(RichText::new(tag).size(10.0).monospace().color(col));
+                                    });
                                 });
-                            });
+                            }
+                        } else {
+                            for (nick, _, is_chef, _) in remote_members.into_iter().take(4) {
+                                let label = if *is_chef {
+                                    format!("[Chef] {nick}")
+                                } else {
+                                    nick.clone()
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(label).size(11.0).color(Color32::from_rgb(220, 230, 246)));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        ui.label(RichText::new("Connected").size(10.0).monospace().color(Color32::from_rgb(122, 238, 174)));
+                                    });
+                                });
+                            }
                         }
                         if !frame.in_overworld && (!frame.local_party.is_empty() || !frame.partner_parties.is_empty()) {
                             ui.separator();
@@ -1503,8 +1644,13 @@ pub fn draw_multiplayer_window(
                                     if ui.button(leave).clicked() {
                                         actions.push(Action::LeaveRoom);
                                     }
-                                    if room_conn.is_some_and(|c| !c.is_leader()) {
-                                        if ui.button("TP to Chef").clicked() {
+                                    if room_conn.is_some_and(|c| c.members().len() > 1) {
+                                        let lbl = if room_conn.is_some_and(|c| !c.is_leader()) {
+                                            "TP to Chef"
+                                        } else {
+                                            "TP to Mate"
+                                        };
+                                        if ui.button(lbl).clicked() {
                                             actions.push(Action::TeleportToLeader);
                                         }
                                     }
@@ -1533,6 +1679,20 @@ pub fn draw_multiplayer_window(
                                 let leader_mac = conn.leader();
                                 let local_mac = conn.mac();
                                 let i_am_leader = conn.is_leader();
+                                let others_count = members.iter().filter(|m| m.mac != local_mac).count();
+                                let conn_txt = if others_count > 0 {
+                                    format!("CONNECTED — You + {others_count} teammate(s) are in this room!")
+                                } else {
+                                    "ALONE IN ROOM (1/1) — Waiting for teammate to join your IP:Port".to_owned()
+                                };
+                                let conn_col = if others_count > 0 {
+                                    Color32::from_rgb(112, 240, 168)
+                                } else {
+                                    Color32::from_rgb(252, 206, 108)
+                                };
+                                ui.label(RichText::new(conn_txt).size(12.0).strong().color(conn_col));
+                                ui.add_space(4.0);
+                                let local_zone = coop.last_sample.as_ref().map(|s| s.presence.zone_id);
                                 ui.label(RichText::new(format!("Party Members ({})", members.len())).size(12.5).strong());
                                 for m in members {
                                     let is_chef = leader_mac == Some(m.mac);
@@ -1551,10 +1711,28 @@ pub fn draw_multiplayer_window(
                                                 .strong()
                                                 .color(col),
                                         );
-                                        if i_am_leader && !is_chef && !is_self {
+                                        if !is_self {
+                                            if let Some(remote) = coop.smoothed.get(&m.mac) {
+                                                let z = remote.presence.zone_id;
+                                                let (status_s, status_c) = if z == 0 {
+                                                    ("Title / Syncing".to_owned(), Color32::from_rgb(176, 188, 210))
+                                                } else if local_zone == Some(z) {
+                                                    (format!("Same Zone ({z})"), Color32::from_rgb(122, 238, 174))
+                                                } else {
+                                                    (format!("Zone {z}"), Color32::from_rgb(142, 198, 255))
+                                                };
+                                                ui.label(RichText::new(format!("· {status_s}")).size(11.0).monospace().color(status_c));
+                                            } else {
+                                                ui.label(RichText::new("· Connected").size(11.0).monospace().color(Color32::from_rgb(122, 238, 174)));
+                                            }
                                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                                if ui.small_button("Make Chef").clicked() {
-                                                    actions.push(Action::SetCoopLeader(m.mac));
+                                                if ui.small_button("TP").clicked() {
+                                                    actions.push(Action::TeleportToPeer(m.mac));
+                                                }
+                                                if i_am_leader && !is_chef {
+                                                    if ui.small_button("Make Chef").clicked() {
+                                                        actions.push(Action::SetCoopLeader(m.mac));
+                                                    }
                                                 }
                                             });
                                         }
@@ -1774,22 +1952,44 @@ fn is_battle_active(mem: &mut Memory, team_ptr: Option<u32>) -> bool {
     read_u32(mem, cfg.wrapping_add(0x4C)) == Some(tp)
 }
 
+fn check_candidate_player_model(mem: &mut Memory, m: u32) -> Option<u32> {
+    let flags0 = read_u32(mem, m.wrapping_add(0x04))?;
+    if (flags0 & 1) == 0 {
+        return None;
+    }
+    let id = read_u16(mem, m.wrapping_add(0x0C))?;
+    if id != 0xFF {
+        return None;
+    }
+    let px = read_f32(mem, m.wrapping_add(0x114))?;
+    let py = read_f32(mem, m.wrapping_add(0x118))?;
+    let pz = read_f32(mem, m.wrapping_add(0x11C))?;
+    if px.abs() < 100_000.0 && py.abs() < 100_000.0 && pz.abs() < 100_000.0 {
+        Some(m)
+    } else {
+        None
+    }
+}
+
 fn try_models_offset(mem: &mut Memory, model_mgr: u32, off: u32) -> Option<u32> {
     let models_base = read_u32(mem, model_mgr.wrapping_add(off)).filter(|&p| is_heap_ptr(p))?;
+    // Check struct array layout (`models_base + i * 0xAB0`)
     for i in 0..32u32 {
         let m = models_base.wrapping_add(i * 0xAB0);
-        let Some(flags0) = read_u32(mem, m.wrapping_add(0x04)) else { break };
-        if (flags0 & 1) == 0 {
-            continue;
+        if !mem.is_readable(m, 0x120) {
+            break;
         }
-        let Some(id) = read_u16(mem, m.wrapping_add(0x0C)) else { continue };
-        if id == 0xFF {
-            let px = read_f32(mem, m.wrapping_add(0x114))?;
-            let py = read_f32(mem, m.wrapping_add(0x118))?;
-            let pz = read_f32(mem, m.wrapping_add(0x11C))?;
-            if px.abs() < 100_000.0 && py.abs() < 100_000.0 && pz.abs() < 100_000.0 {
-                return Some(m);
-            }
+        if let Some(found) = check_candidate_player_model(mem, m) {
+            return Some(found);
+        }
+    }
+    // Check pointer table layout (`*(models_base + i * 4)`)
+    for i in 0..32u32 {
+        let Some(ptr) = read_u32(mem, models_base.wrapping_add(i * 4)).filter(|&p| is_heap_ptr(p)) else {
+            break;
+        };
+        if let Some(found) = check_candidate_player_model(mem, ptr) {
+            return Some(found);
         }
     }
     None
@@ -1799,7 +1999,7 @@ fn find_player_model(mem: &mut Memory, model_mgr: u32, offset_hint: &mut u32) ->
     if let Some(m) = try_models_offset(mem, model_mgr, *offset_hint) {
         return Some(m);
     }
-    for off in (0x3640u32..=0x3700).step_by(4).chain((0x1470u32..=0x14C0).step_by(4)) {
+    for off in (0x3600u32..=0x3780).step_by(4).chain((0x1450u32..=0x1540).step_by(4)) {
         if let Some(m) = try_models_offset(mem, model_mgr, off) {
             *offset_hint = off;
             return Some(m);
@@ -1834,6 +2034,8 @@ fn fallback_overworld_camera(player: [f32; 3]) -> WorldCamera {
         ],
         proj: default_perspective_mtx(),
         rotated_landscape: false,
+        right_sign: 1.0,
+        up_sign: 1.0,
     }
 }
 
@@ -2077,7 +2279,7 @@ fn default_perspective_mtx() -> [[f32; 4]; 4] {
     ]
 }
 
-fn validate_proj_matrix(proj: &[[f32; 4]; 4], cam_p: [f32; 3]) -> Option<bool> {
+fn validate_proj_matrix(proj: &[[f32; 4]; 4], cam_p: [f32; 3]) -> Option<(bool, f32, f32)> {
     let w = proj[3][0] * cam_p[0] + proj[3][1] * cam_p[1] + proj[3][2] * cam_p[2] + proj[3][3];
     if w.abs() < 1e-4 {
         return None;
@@ -2087,11 +2289,16 @@ fn validate_proj_matrix(proj: &[[f32; 4]; 4], cam_p: [f32; 3]) -> Option<bool> {
     if !x.is_finite() || !y.is_finite() || x.abs() > 0.45 || y.abs() > 0.45 {
         return None;
     }
+    let w_sign = w.signum();
     if proj[0][0].abs() > 0.25 && proj[1][1].abs() > 0.25 && proj[0][1].abs() < 0.05 && proj[1][0].abs() < 0.05 {
-        return Some(false);
+        let rs = (proj[0][0] * w_sign).signum();
+        let us = (proj[1][1] * w_sign).signum();
+        return Some((false, rs, us));
     }
     if proj[0][1].abs() > 0.25 && proj[1][0].abs() > 0.25 && proj[0][0].abs() < 0.05 && proj[1][1].abs() < 0.05 {
-        return Some(true);
+        let rs = (proj[1][0] * w_sign).signum();
+        let us = (proj[0][1] * w_sign).signum();
+        return Some((true, rs, us));
     }
     None
 }
@@ -2113,9 +2320,9 @@ fn project_point(
     let px = (cam.proj[0][0] * c[0] + cam.proj[0][1] * c[1] + cam.proj[0][2] * c[2] + cam.proj[0][3]) / w;
     let py = (cam.proj[1][0] * c[0] + cam.proj[1][1] * c[1] + cam.proj[1][2] * c[2] + cam.proj[1][3]) / w;
     let (ndc_x, ndc_y) = if cam.rotated_landscape {
-        (-py * aspect_scale, px)
+        (py * cam.right_sign * aspect_scale, px * cam.up_sign)
     } else {
-        (px * aspect_scale, py)
+        (px * cam.right_sign * aspect_scale, py * cam.up_sign)
     };
     let sx = top_rect.left() + (ndc_x * 0.5 + 0.5) * top_rect.width();
     let sy = top_rect.top() + (0.5 - ndc_y * 0.5) * top_rect.height();
@@ -2156,7 +2363,7 @@ fn sample_oras_world(
             }
             *last_gm_scan = Instant::now();
             let mut found = None;
-            for addr in (0x0062_8000..=0x0063_8000).step_by(4) {
+            for addr in (0x0058_0000..=0x0078_0000).step_by(4) {
                 if let Some(v) = validate_gm_slot(mem, addr) {
                     *gm_slot_hint = addr;
                     found = Some(v);
@@ -2228,17 +2435,17 @@ fn sample_oras_world(
             if let Some(lc) = left_cam {
                 if let Some(off) = *proj_offset_hint {
                     if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
-                        if let Some(rot) = validate_proj_matrix(&pm, cam_p) {
-                            resolved_proj = Some((pm, rot));
+                        if let Some((rot, rs, us)) = validate_proj_matrix(&pm, cam_p) {
+                            resolved_proj = Some((pm, rot, rs, us));
                         }
                     }
                 }
                 if resolved_proj.is_none() {
                     for off in (0x00u32..=0x180).step_by(4) {
                         if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
-                            if let Some(rot) = validate_proj_matrix(&pm, cam_p) {
+                            if let Some((rot, rs, us)) = validate_proj_matrix(&pm, cam_p) {
                                 *proj_offset_hint = Some(off);
-                                resolved_proj = Some((pm, rot));
+                                resolved_proj = Some((pm, rot, rs, us));
                                 break;
                             }
                         }
@@ -2246,11 +2453,14 @@ fn sample_oras_world(
                 }
             }
 
-            let (proj, rotated_landscape) = resolved_proj.unwrap_or_else(|| (default_perspective_mtx(), false));
+            let (proj, rotated_landscape, right_sign, up_sign) =
+                resolved_proj.unwrap_or_else(|| (default_perspective_mtx(), false, 1.0, 1.0));
             Some(WorldCamera {
                 view,
                 proj,
                 rotated_landscape,
+                right_sign,
+                up_sign,
             })
         })
         .or_else(|| Some(fallback_overworld_camera([px, py, pz])));
@@ -2365,6 +2575,8 @@ mod tests {
             ],
             proj: default_perspective_mtx(),
             rotated_landscape: false,
+            right_sign: 1.0,
+            up_sign: 1.0,
         };
         let top = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 480.0));
         let (p_center, depth) = project_point(&cam, [0.0, 0.0, 0.0], top, 1.0).unwrap();

@@ -496,6 +496,14 @@ pub fn top_aspect_scale() -> f32 {
         let surface = unsafe {
             ash_window::create_surface(&entry, &instance, display.as_raw(), window_handle.as_raw(), None)
         }.map_err(vk_fail("creating secondary surface"))?;
+        // BLUEORB_DUAL_WIN_VK_SUPPORT_V1
+        let supported = unsafe {
+            surface_instance.get_physical_device_surface_support(physical_device, queue_family, surface)
+        }.map_err(vk_fail("querying secondary surface support"))?;
+        if !supported {
+            unsafe { surface_instance.destroy_surface(surface, None) };
+            return Err(fail("secondary surface is not supported by the active Vulkan queue"));
+        }
 
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
         let swapchain_device = ash::khr::swapchain::Device::new(&instance, &device);
@@ -641,6 +649,13 @@ pub fn top_aspect_scale() -> f32 {
     pub fn new("#;
 
             src = src.replace("    pub fn new(", sec_ctor);
+            fs::write(&vk_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if src.contains("pub fn new_secondary(") && !src.contains("BLUEORB_DUAL_WIN_VK_SUPPORT_V1") {
+            src = src.replace(
+                "        let surface = unsafe {\n            ash_window::create_surface(&entry, &instance, display.as_raw(), window_handle.as_raw(), None)\n        }.map_err(vk_fail(\"creating secondary surface\"))?;",
+                "        let surface = unsafe {\n            ash_window::create_surface(&entry, &instance, display.as_raw(), window_handle.as_raw(), None)\n        }.map_err(vk_fail(\"creating secondary surface\"))?;\n        // BLUEORB_DUAL_WIN_VK_SUPPORT_V1\n        let supported = unsafe {\n            surface_instance.get_physical_device_surface_support(physical_device, queue_family, surface)\n        }.map_err(vk_fail(\"querying secondary surface support\"))?;\n        if !supported {\n            unsafe { surface_instance.destroy_surface(surface, None) };\n            return Err(fail(\"secondary surface is not supported by the active Vulkan queue\"));\n        }",
+            );
             fs::write(&vk_rs, src).map_err(|e| e.to_string())?;
         }
     }
@@ -924,6 +939,28 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "            auto_update: true,\n            discord_rpc: true,\n            discord_client_id: String::new(),\n        }",
             );
         }
+        if !src.contains("fast_forward_speed") {
+            src = src.replace(
+                "    pub frame_interpolation: Option<bool>,",
+                "    pub frame_interpolation: Option<bool>,\n    pub fast_forward_speed: Option<u32>,",
+            );
+            src = src.replace(
+                "    pub frame_interpolation: bool,",
+                "    pub frame_interpolation: bool,\n    #[serde(default = \"blueorb_default_ff_speed\")]\n    pub fast_forward_speed: u32,",
+            );
+            src = src.replace(
+                "            frame_interpolation: false,",
+                "            frame_interpolation: false,\n            fast_forward_speed: 3,",
+            );
+            src = src.replace(
+                "fn blueorb_true() -> bool { true }",
+                "fn blueorb_true() -> bool { true }\nfn blueorb_default_ff_speed() -> u32 { 3 }",
+            );
+            src = src.replace(
+                "        settings.frame_interpolation = self.frame_interpolation.unwrap_or(settings.frame_interpolation);",
+                "        settings.frame_interpolation = self.frame_interpolation.unwrap_or(settings.frame_interpolation);\n        settings.fast_forward_speed = self.fast_forward_speed.unwrap_or(settings.fast_forward_speed);",
+            );
+        }
         fs::write(&settings_rs, src).map_err(|e| e.to_string())?;
     }
 
@@ -1140,6 +1177,28 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "                console_card(ui, width, |ui, _| {\n                    actions.extend(crate::updater::draw_pause_update_section(ui, &self.update_status, &mut settings.auto_update));\n                });",
                 "                console_card(ui, width, |ui, _| {\n                    actions.extend(crate::updater::draw_pause_update_section(ui, &self.update_status, &mut settings.auto_update));\n                });\n                ui.add_space(10.0);\n                console_card(ui, width, |ui, _| {\n                    crate::discord::draw_discord_rpc_section(ui, &mut settings.discord_rpc, &mut settings.discord_client_id, self.discord_state);\n                });",
             );
+            fs::write(&menus_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("fast_forward_seg") {
+            src = src.replace(
+                "                    if own.frame_interpolation.is_some() {\n                        own.frame_interpolation = Some(settings.frame_interpolation);\n                    }",
+                "                    if own.frame_interpolation.is_some() {\n                        own.frame_interpolation = Some(settings.frame_interpolation);\n                    }\n                    if own.fast_forward_speed.is_some() {\n                        own.fast_forward_speed = Some(settings.fast_forward_speed);\n                    }",
+            );
+            src = src.replace(
+                "                    console_toggle_row(\n                        ui,\n                        cw,\n                        \"Frame Interpolation (60 Hz)\",\n                        \"Interpolates slow camera motion between 30 FPS frames.\",\n                        &mut settings.frame_interpolation,\n                    );",
+                "                    console_toggle_row(\n                        ui,\n                        cw,\n                        \"Frame Interpolation (60 Hz)\",\n                        \"Interpolates slow camera motion between 30 FPS frames.\",\n                        &mut settings.frame_interpolation,\n                    );\n\n                    ui.add_space(8.0);\n                    ui.separator();\n                    ui.add_space(6.0);\n                    ui.label(RichText::new(\"Fast Forward Max Speed (Tab)\").size(13.5).strong().color(Color32::from_rgb(232, 232, 238)));\n                    ui.add_space(6.0);\n                    let ff_opts = [\n                        (2u32, \"2x\"),\n                        (3, \"3x (Default)\"),\n                        (4, \"4x\"),\n                        (6, \"6x\"),\n                    ];\n                    if let Some(ff) = console_segmented(ui, cw, 32.0, settings.fast_forward_speed.clamp(2, 6), &ff_opts, \"fast_forward_seg\") {\n                        settings.fast_forward_speed = ff;\n                    }",
+            );
+            fs::write(&menus_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_MULTI_NO_PAUSE_V1") {
+            src = src.replace(
+                "    TeleportToLeader,\n",
+                "    // BLUEORB_MULTI_NO_PAUSE_V1\n    TeleportToLeader,\n    TeleportToPeer(zakuro_core::room::Mac),\n",
+            );
+            src = src.replace(
+                "                    if console_secondary_button(ui, half, 32.0, \"Multiplayer & Co-op (F4)\", true) {\n                        self.multiplayer_open = true;\n                    }",
+                "                    if console_secondary_button(ui, half, 32.0, \"Multiplayer & Co-op (F4)\", true) {\n                        self.multiplayer_open = true;\n                        self.menu_open = false;\n                    }",
+            );
             fs::write(&menus_rs, src).map_err(|e| e.to_string())?;
         }
     }
@@ -1148,8 +1207,54 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     let present_rs = zakuro_src.join("present.rs");
     if present_rs.exists() {
         let mut src = read_lf(&present_rs).map_err(|e| e.to_string())?;
+        let sec_fn_resilient = r#"    pub fn create_secondary(
+        event_loop: &ActiveEventLoop,
+        attributes: WindowAttributes,
+        shared: Option<std::sync::Arc<SharedDevice>>,
+    ) -> Result<(Window, Backend), String> {
+        // BLUEORB_DUAL_WIN_PRESENT_V1
+        if let Some(shared_dev) = shared {
+            let vk_attempt = event_loop
+                .create_window(attributes.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|window| {
+                    let size = window.inner_size();
+                    match VulkanPresenter::new_secondary(&window, (size.width.max(1), size.height.max(1)), shared_dev) {
+                        Ok(mut presenter) => {
+                            presenter.set_layout(ScreenLayout::BottomOnly);
+                            Ok((window, Backend::Vulkan(presenter)))
+                        }
+                        Err(e) => Err(e.to_string()),
+                    }
+                });
+            match vk_attempt {
+                Ok(res) => return Ok(res),
+                Err(vk_err) => {
+                    log::warn!("secondary Vulkan window failed ({vk_err}), falling back to OpenGL");
+                }
+            }
+        }
+        let (window, mut backend) = create_opengl(event_loop, attributes.clone())
+            .or_else(|gl_err| {
+                log::warn!("secondary OpenGL window failed ({gl_err}), trying standalone Vulkan");
+                create_vulkan(event_loop, attributes)
+            })?;
+        backend.set_layout(ScreenLayout::BottomOnly);
+        Ok((window, backend))
+    }
+
+    pub fn shares_vulkan_device(&self) -> bool {
+        matches!(self, Backend::Vulkan(p) if p.shared_device().is_some())
+    }
+
+    pub fn create("#;
+        let mut changed = false;
         if !src.contains("pub fn create_secondary(") {
-            let sec_fn = r#"    pub fn create_secondary(
+            src = src.replace("    pub fn create(", sec_fn_resilient);
+            changed = true;
+        }
+        if !src.contains("BLUEORB_DUAL_WIN_PRESENT_V1") {
+            let old_sec_fn = r#"    pub fn create_secondary(
         event_loop: &ActiveEventLoop,
         attributes: WindowAttributes,
         shared: Option<std::sync::Arc<SharedDevice>>,
@@ -1168,7 +1273,20 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
     }
 
     pub fn create("#;
-            src = src.replace("    pub fn create(", sec_fn);
+            if src.contains(old_sec_fn) {
+                src = src.replace(old_sec_fn, sec_fn_resilient);
+            }
+            src = src.replace(
+                "            Backend::OpenGl {\n                presenter,\n                context,\n                surface,\n            } => {\n                presenter.resize(width, height);",
+                "            Backend::OpenGl {\n                presenter,\n                context,\n                surface,\n            } => {\n                let _ = context.make_current(surface);\n                presenter.resize(width, height);",
+            );
+            src = src.replace(
+                "            Backend::OpenGl {\n                presenter,\n                context,\n                surface,\n            } => {\n                presenter.present(top, bottom, right, overlay)?;",
+                "            Backend::OpenGl {\n                presenter,\n                context,\n                surface,\n            } => {\n                context.make_current(surface).map_err(|e| PresentError::Backend(e.to_string()))?;\n                presenter.present(top, bottom, right, overlay)?;",
+            );
+            changed = true;
+        }
+        if changed {
             fs::write(&present_rs, src).map_err(|e| e.to_string())?;
         }
     }
@@ -1184,11 +1302,11 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "        backend: None,\n        window: None,",
-                "        backend: None,\n        window: None,\n        bottom_backend: None,\n        bottom_window: None,\n        bottom_cursor: (0.0, 0.0),\n        bottom_mouse_down: false,",
+                "        backend: None,\n        window: None,\n        bottom_backend: None,\n        bottom_window: None,\n        bottom_cursor: (0.0, 0.0),\n        bottom_mouse_down: false,\n        f7_held: false,\n        last_f7_press: None,\n        last_dual_toggle: None,",
             );
             src = src.replace(
                 "    backend: Option<Backend>,\n    window: Option<Window>,",
-                "    backend: Option<Backend>,\n    window: Option<Window>,\n    bottom_backend: Option<Backend>,\n    bottom_window: Option<Window>,\n    bottom_cursor: (f32, f32),\n    bottom_mouse_down: bool,",
+                "    backend: Option<Backend>,\n    window: Option<Window>,\n    bottom_backend: Option<Backend>,\n    bottom_window: Option<Window>,\n    bottom_cursor: (f32, f32),\n    bottom_mouse_down: bool,\n    f7_held: bool,\n    last_f7_press: Option<Instant>,\n    last_dual_toggle: Option<Instant>,",
             );
             src = src.replace(
                 "    layout: Screens,",
@@ -1569,6 +1687,151 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
 
             let present_needle = "    fn present(&mut self, event_loop: &ActiveEventLoop) {\n        let overlay = self.interface(event_loop);";
             let present_rep = r#"    fn sync_bottom_window(&mut self, event_loop: &ActiveEventLoop) {
+        // BLUEORB_DUAL_WIN_FULLSCREEN_V2
+        let wants_second = self.layout == Screens::SeparateWindows && self.game.is_some();
+        if wants_second && self.bottom_window.is_none() {
+            let main_full = self.window.as_ref().is_some_and(|w| w.fullscreen().is_some());
+            let main_mon = self.window.as_ref().and_then(|w| w.current_monitor());
+            let other_mon = main_mon.as_ref().and_then(|cur| {
+                event_loop.available_monitors().find(|m| m.position() != cur.position())
+            });
+            let pip_mode = main_full && other_mon.is_none();
+            let bot_scale = if pip_mode { 2 } else { self.scale.clamp(2, 4) };
+            let bot_size = winit::dpi::LogicalSize::new(320 * bot_scale, 240 * bot_scale);
+            let mut attrs = Window::default_attributes()
+                .with_title("BlueOrb — Touch Screen")
+                .with_window_icon(blueorb_initial_window_icon(self.settings.blueorb_rom.as_deref()))
+                .with_inner_size(bot_size);
+            if pip_mode {
+                attrs = attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+            }
+            let shared = self.backend.as_ref().and_then(Backend::shared_device);
+            match Backend::create_secondary(event_loop, attrs, shared) {
+                Ok((win, mut bot_backend)) => {
+                    bot_backend.set_scaling(self.active.filter.screens(), self.active.integer_scale);
+                    bot_backend.set_orientation(self.orientation.screen_orientation());
+                    if pip_mode {
+                        win.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+                    }
+                    if let Some(main_win) = &self.window {
+                        let bot_outer = win.outer_size();
+                        let sf = main_win.scale_factor();
+                        let bot_w = if bot_outer.width > 0 {
+                            bot_outer.width as i32
+                        } else {
+                            ((320 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        let bot_h = if bot_outer.height > 0 {
+                            bot_outer.height as i32
+                        } else {
+                            ((240 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        if let Some(mon) = &main_mon {
+                            let mpos = mon.position();
+                            let msize = mon.size();
+                            let mon_left = mpos.x;
+                            let mon_top = mpos.y;
+                            let mon_right = mpos.x + msize.width as i32;
+                            let mon_bottom = mpos.y + msize.height as i32;
+                            let pos = main_win.outer_position().unwrap_or(mpos);
+                            let main_w = main_win.outer_size().width as i32;
+                            let target_pos = if pip_mode {
+                                winit::dpi::PhysicalPosition::new(
+                                    (mon_right - bot_w - 24).clamp(mon_left, (mon_right - bot_w).max(mon_left)),
+                                    (mon_bottom - bot_h - 48).clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else if !main_full && !main_win.is_maximized() && pos.x + main_w + 16 + bot_w <= mon_right {
+                                winit::dpi::PhysicalPosition::new(
+                                    pos.x + main_w + 16,
+                                    pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else if let Some(other) = &other_mon {
+                                let opos = other.position();
+                                winit::dpi::PhysicalPosition::new(opos.x + 48, opos.y + 48)
+                            } else if !main_full && !main_win.is_maximized() && pos.x - bot_w - 16 >= mon_left {
+                                winit::dpi::PhysicalPosition::new(
+                                    pos.x - bot_w - 16,
+                                    pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else {
+                                winit::dpi::PhysicalPosition::new(
+                                    (mon_right - bot_w - 24).clamp(mon_left, (mon_right - bot_w).max(mon_left)),
+                                    (mon_bottom - bot_h - 48).clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            };
+                            win.set_outer_position(target_pos);
+                        } else if let Ok(pos) = main_win.outer_position() {
+                            win.set_outer_position(winit::dpi::PhysicalPosition::new(
+                                (pos.x + 48).max(0),
+                                (pos.y + 48).max(0),
+                            ));
+                        }
+                    }
+                    win.set_visible(true);
+                    if !pip_mode {
+                        win.focus_window();
+                    }
+                    self.bottom_window = Some(win);
+                    self.bottom_backend = Some(bot_backend);
+                }
+                Err(err) => {
+                    log::warn!("could not open secondary touch window: {err}");
+                    self.menus.toast = Some((format!("Dual Window unavailable: {err}"), Instant::now()));
+                    let restore = self.last_combined_layout;
+                    self.set_layout(restore);
+                }
+            }
+        } else if !wants_second && self.bottom_window.is_some() {
+            self.bottom_mouse_down = false;
+            self.bottom_backend = None;
+            self.bottom_window = None;
+        }
+    }
+
+    fn present(&mut self, event_loop: &ActiveEventLoop) {
+        let overlay = self.interface(event_loop);
+        self.sync_bottom_window(event_loop);"#;
+            src = src.replace(present_needle, present_rep);
+
+            let present_end_needle = r#"        match result {
+            Ok(()) | Err(PresentError::OutOfDate) => {}
+            Err(error) => {
+                log::error!("presentation failed: {error}");
+                event_loop.exit();
+            }
+        }
+    }"#;
+            let present_end_rep = r#"        match result {
+            Ok(()) | Err(PresentError::OutOfDate) => {}
+            Err(error) => {
+                log::error!("presentation failed: {error}");
+                event_loop.exit();
+            }
+        }
+        let main_shared = self.backend.as_ref().and_then(Backend::shared_device);
+        if let Some(bot_backend) = &mut self.bottom_backend {
+            let empty_px: Vec<u8> = Vec::new();
+            let empty_overlay = Overlay::default();
+            let same_vk_device = bot_backend.shares_vulkan_device()
+                && match (&main_shared, bot_backend.shared_device()) {
+                    (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, &b),
+                    _ => false,
+                };
+            let _ = bot_backend.present(
+                ScreenImage { width: 400, height: 240, pixels: &empty_px, gpu: None },
+                ScreenImage { width: bottom_width, height: bottom_height, pixels: &bottom, gpu: if same_vk_device { bottom_gpu } else { None } },
+                ScreenImage { width: 400, height: 240, pixels: &empty_px, gpu: None },
+                &empty_overlay,
+            );
+        }
+    }"#;
+            src = src.replace(present_end_needle, present_end_rep);
+            src.push_str(OFFICIAL_ICON_UPDATER_RS);
+
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if src.contains("fn sync_bottom_window(") && !src.contains("BLUEORB_DUAL_WIN_FULLSCREEN_V2") {
+            let old_sync_v0 = r#"    fn sync_bottom_window(&mut self, event_loop: &ActiveEventLoop) {
         let wants_second = self.layout == Screens::SeparateWindows && self.game.is_some();
         if wants_second && self.bottom_window.is_none() {
             let bot_scale = self.scale.clamp(2, 4);
@@ -1601,29 +1864,198 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             self.bottom_backend = None;
             self.bottom_window = None;
         }
-    }
-
-    fn present(&mut self, event_loop: &ActiveEventLoop) {
-        let overlay = self.interface(event_loop);
-        self.sync_bottom_window(event_loop);"#;
-            src = src.replace(present_needle, present_rep);
-
-            let present_end_needle = r#"        match result {
-            Ok(()) | Err(PresentError::OutOfDate) => {}
-            Err(error) => {
-                log::error!("presentation failed: {error}");
-                event_loop.exit();
+    }"#;
+            let old_sync_v1 = r#"    fn sync_bottom_window(&mut self, event_loop: &ActiveEventLoop) {
+        // BLUEORB_DUAL_WIN_SYNC_V1
+        let wants_second = self.layout == Screens::SeparateWindows && self.game.is_some();
+        if wants_second && self.bottom_window.is_none() {
+            let bot_scale = self.scale.clamp(2, 4);
+            let bot_size = winit::dpi::LogicalSize::new(320 * bot_scale, 240 * bot_scale);
+            let attrs = Window::default_attributes()
+                .with_title("BlueOrb — Touch Screen")
+                .with_window_icon(blueorb_initial_window_icon(self.settings.blueorb_rom.as_deref()))
+                .with_inner_size(bot_size);
+            let shared = self.backend.as_ref().and_then(Backend::shared_device);
+            match Backend::create_secondary(event_loop, attrs, shared) {
+                Ok((win, mut bot_backend)) => {
+                    bot_backend.set_scaling(self.active.filter.screens(), self.active.integer_scale);
+                    bot_backend.set_orientation(self.orientation.screen_orientation());
+                    if let Some(main_win) = &self.window {
+                        let bot_outer = win.outer_size();
+                        let sf = main_win.scale_factor();
+                        let bot_w = if bot_outer.width > 0 {
+                            bot_outer.width as i32
+                        } else {
+                            ((320 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        let bot_h = if bot_outer.height > 0 {
+                            bot_outer.height as i32
+                        } else {
+                            ((240 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        if let Ok(pos) = main_win.outer_position() {
+                            let main_sz = main_win.outer_size();
+                            let main_w = main_sz.width as i32;
+                            if let Some(mon) = main_win.current_monitor() {
+                                let mpos = mon.position();
+                                let msize = mon.size();
+                                let mon_left = mpos.x;
+                                let mon_top = mpos.y;
+                                let mon_right = mpos.x + msize.width as i32;
+                                let mon_bottom = mpos.y + msize.height as i32;
+                                let target_pos = if pos.x + main_w + 16 + bot_w <= mon_right {
+                                    winit::dpi::PhysicalPosition::new(
+                                        pos.x + main_w + 16,
+                                        pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                    )
+                                } else if let Some(other) = event_loop
+                                    .available_monitors()
+                                    .find(|m| m.position() != mpos)
+                                {
+                                    let opos = other.position();
+                                    winit::dpi::PhysicalPosition::new(opos.x + 48, opos.y + 48)
+                                } else if pos.x - bot_w - 16 >= mon_left {
+                                    winit::dpi::PhysicalPosition::new(
+                                        pos.x - bot_w - 16,
+                                        pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                    )
+                                } else {
+                                    winit::dpi::PhysicalPosition::new(
+                                        (pos.x + 48).clamp(mon_left, (mon_right - bot_w).max(mon_left)),
+                                        (pos.y + 48).clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                    )
+                                };
+                                win.set_outer_position(target_pos);
+                            } else {
+                                win.set_outer_position(winit::dpi::PhysicalPosition::new(
+                                    (pos.x + 48).max(0),
+                                    (pos.y + 48).max(0),
+                                ));
+                            }
+                        }
+                    }
+                    win.set_visible(true);
+                    win.focus_window();
+                    self.bottom_window = Some(win);
+                    self.bottom_backend = Some(bot_backend);
+                }
+                Err(err) => {
+                    log::warn!("could not open secondary touch window: {err}");
+                    self.menus.toast = Some((format!("Dual Window unavailable: {err}"), Instant::now()));
+                    let restore = self.last_combined_layout;
+                    self.set_layout(restore);
+                }
             }
+        } else if !wants_second && self.bottom_window.is_some() {
+            self.bottom_mouse_down = false;
+            self.bottom_backend = None;
+            self.bottom_window = None;
         }
     }"#;
-            let present_end_rep = r#"        match result {
-            Ok(()) | Err(PresentError::OutOfDate) => {}
-            Err(error) => {
-                log::error!("presentation failed: {error}");
-                event_loop.exit();
+            let new_sync = r#"    fn sync_bottom_window(&mut self, event_loop: &ActiveEventLoop) {
+        // BLUEORB_DUAL_WIN_FULLSCREEN_V2
+        let wants_second = self.layout == Screens::SeparateWindows && self.game.is_some();
+        if wants_second && self.bottom_window.is_none() {
+            let main_full = self.window.as_ref().is_some_and(|w| w.fullscreen().is_some());
+            let main_mon = self.window.as_ref().and_then(|w| w.current_monitor());
+            let other_mon = main_mon.as_ref().and_then(|cur| {
+                event_loop.available_monitors().find(|m| m.position() != cur.position())
+            });
+            let pip_mode = main_full && other_mon.is_none();
+            let bot_scale = if pip_mode { 2 } else { self.scale.clamp(2, 4) };
+            let bot_size = winit::dpi::LogicalSize::new(320 * bot_scale, 240 * bot_scale);
+            let mut attrs = Window::default_attributes()
+                .with_title("BlueOrb — Touch Screen")
+                .with_window_icon(blueorb_initial_window_icon(self.settings.blueorb_rom.as_deref()))
+                .with_inner_size(bot_size);
+            if pip_mode {
+                attrs = attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
             }
+            let shared = self.backend.as_ref().and_then(Backend::shared_device);
+            match Backend::create_secondary(event_loop, attrs, shared) {
+                Ok((win, mut bot_backend)) => {
+                    bot_backend.set_scaling(self.active.filter.screens(), self.active.integer_scale);
+                    bot_backend.set_orientation(self.orientation.screen_orientation());
+                    if pip_mode {
+                        win.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+                    }
+                    if let Some(main_win) = &self.window {
+                        let bot_outer = win.outer_size();
+                        let sf = main_win.scale_factor();
+                        let bot_w = if bot_outer.width > 0 {
+                            bot_outer.width as i32
+                        } else {
+                            ((320 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        let bot_h = if bot_outer.height > 0 {
+                            bot_outer.height as i32
+                        } else {
+                            ((240 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        if let Some(mon) = &main_mon {
+                            let mpos = mon.position();
+                            let msize = mon.size();
+                            let mon_left = mpos.x;
+                            let mon_top = mpos.y;
+                            let mon_right = mpos.x + msize.width as i32;
+                            let mon_bottom = mpos.y + msize.height as i32;
+                            let pos = main_win.outer_position().unwrap_or(mpos);
+                            let main_w = main_win.outer_size().width as i32;
+                            let target_pos = if pip_mode {
+                                winit::dpi::PhysicalPosition::new(
+                                    (mon_right - bot_w - 24).clamp(mon_left, (mon_right - bot_w).max(mon_left)),
+                                    (mon_bottom - bot_h - 48).clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else if !main_full && !main_win.is_maximized() && pos.x + main_w + 16 + bot_w <= mon_right {
+                                winit::dpi::PhysicalPosition::new(
+                                    pos.x + main_w + 16,
+                                    pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else if let Some(other) = &other_mon {
+                                let opos = other.position();
+                                winit::dpi::PhysicalPosition::new(opos.x + 48, opos.y + 48)
+                            } else if !main_full && !main_win.is_maximized() && pos.x - bot_w - 16 >= mon_left {
+                                winit::dpi::PhysicalPosition::new(
+                                    pos.x - bot_w - 16,
+                                    pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else {
+                                winit::dpi::PhysicalPosition::new(
+                                    (mon_right - bot_w - 24).clamp(mon_left, (mon_right - bot_w).max(mon_left)),
+                                    (mon_bottom - bot_h - 48).clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            };
+                            win.set_outer_position(target_pos);
+                        } else if let Ok(pos) = main_win.outer_position() {
+                            win.set_outer_position(winit::dpi::PhysicalPosition::new(
+                                (pos.x + 48).max(0),
+                                (pos.y + 48).max(0),
+                            ));
+                        }
+                    }
+                    win.set_visible(true);
+                    if !pip_mode {
+                        win.focus_window();
+                    }
+                    self.bottom_window = Some(win);
+                    self.bottom_backend = Some(bot_backend);
+                }
+                Err(err) => {
+                    log::warn!("could not open secondary touch window: {err}");
+                    self.menus.toast = Some((format!("Dual Window unavailable: {err}"), Instant::now()));
+                    let restore = self.last_combined_layout;
+                    self.set_layout(restore);
+                }
+            }
+        } else if !wants_second && self.bottom_window.is_some() {
+            self.bottom_mouse_down = false;
+            self.bottom_backend = None;
+            self.bottom_window = None;
         }
-        if let Some(bot_backend) = &mut self.bottom_backend {
+    }"#;
+            src = src.replace(old_sync_v1, new_sync);
+            src = src.replace(old_sync_v0, new_sync);
+            let old_bot_present = r#"        if let Some(bot_backend) = &mut self.bottom_backend {
             let empty_px: Vec<u8> = Vec::new();
             let empty_overlay = Overlay::default();
             let _ = bot_backend.present(
@@ -1632,11 +2064,302 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 ScreenImage { width: 400, height: 240, pixels: &empty_px, gpu: None },
                 &empty_overlay,
             );
+        }"#;
+            let new_bot_present = r#"        let main_shared = self.backend.as_ref().and_then(Backend::shared_device);
+        if let Some(bot_backend) = &mut self.bottom_backend {
+            let empty_px: Vec<u8> = Vec::new();
+            let empty_overlay = Overlay::default();
+            let same_vk_device = bot_backend.shares_vulkan_device()
+                && match (&main_shared, bot_backend.shared_device()) {
+                    (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, &b),
+                    _ => false,
+                };
+            let _ = bot_backend.present(
+                ScreenImage { width: 400, height: 240, pixels: &empty_px, gpu: None },
+                ScreenImage { width: bottom_width, height: bottom_height, pixels: &bottom, gpu: if same_vk_device { bottom_gpu } else { None } },
+                ScreenImage { width: 400, height: 240, pixels: &empty_px, gpu: None },
+                &empty_overlay,
+            );
+        }"#;
+            src = src.replace(old_bot_present, new_bot_present);
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_TOGGLE_FULLSCREEN_DUAL_V1") {
+            src = src.replace(
+                "                WindowEvent::Focused(false) => {\n                    self.bottom_mouse_down = false;\n                    self.keyboard.release();\n                }",
+                "                WindowEvent::Focused(false) => {\n                    self.bottom_mouse_down = false;\n                    self.fast_forward_key = false;\n                    self.keyboard.release();\n                }",
+            );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_DUAL_WIN_FIX_V2") {
+            if !src.contains("f7_held:") {
+                src = src.replace(
+                    "        bottom_mouse_down: false,",
+                    "        bottom_mouse_down: false,\n        f7_held: false,\n        last_f7_press: None,\n        last_dual_toggle: None,",
+                );
+                src = src.replace(
+                    "    bottom_mouse_down: bool,",
+                    "    bottom_mouse_down: bool,\n    f7_held: bool,\n    last_f7_press: Option<Instant>,\n    last_dual_toggle: Option<Instant>,",
+                );
+            }
+            src = src.replace(
+                "        if pressed && !event.repeat {\n            match code {",
+                "        // BLUEORB_DUAL_WIN_FIX_V2\n        if code == KeyCode::F7 {\n            if !pressed {\n                self.f7_held = false;\n            } else {\n                let still_holding = self.f7_held\n                    && self.last_f7_press.is_some_and(|t| t.elapsed() < Duration::from_millis(600));\n                self.last_f7_press = Some(Instant::now());\n                if !event.repeat && !still_holding {\n                    self.f7_held = true;\n                    let cooled = self.last_dual_toggle.is_none_or(|t| t.elapsed() >= Duration::from_millis(350));\n                    if cooled && self.game.is_some() {\n                        self.last_dual_toggle = Some(Instant::now());\n                        self.toggle_dual_windows();\n                    }\n                }\n            }\n            return;\n        }\n        if pressed && !event.repeat {\n            match code {",
+            );
+            src = src.replace("                KeyCode::F7 => self.toggle_dual_windows(),\n", "");
+
+            let new_toggle_fullscreen = r#"    fn toggle_fullscreen(&mut self) {
+        // BLUEORB_DUAL_WIN_FIX_V2
+        let Some(full) = self.window.as_ref().map(|w| w.fullscreen().is_some()) else { return };
+        let entering_full = !full;
+        if entering_full {
+            if let Some(window) = &self.window {
+                self.maximized_before_full_screen = window.is_maximized();
+                self.resize_after_full_screen = false;
+            }
+            if self.layout == Screens::SeparateWindows {
+                let (other_pos, bot_same_mon) = match &self.window {
+                    Some(window) => {
+                        let main_mpos = window.current_monitor().map(|m| m.position());
+                        let other_pos = window
+                            .available_monitors()
+                            .find(|m| Some(m.position()) != main_mpos)
+                            .map(|m| m.position());
+                        let bot_same = self.bottom_window.as_ref().is_some_and(|bw| {
+                            match (main_mpos, bw.current_monitor().map(|m| m.position())) {
+                                (Some(m), Some(b)) => m == b,
+                                _ => true,
+                            }
+                        });
+                        (other_pos, bot_same)
+                    }
+                    None => (None, false),
+                };
+                if let Some(opos) = other_pos {
+                    if bot_same_mon {
+                        if let Some(bot_win) = &self.bottom_window {
+                            bot_win.set_window_level(winit::window::WindowLevel::Normal);
+                            bot_win.set_outer_position(winit::dpi::PhysicalPosition::new(opos.x + 48, opos.y + 48));
+                            bot_win.set_visible(true);
+                        }
+                    }
+                } else {
+                    let restore = self.last_combined_layout;
+                    self.set_layout(restore);
+                    self.bottom_mouse_down = false;
+                    self.bottom_backend = None;
+                    self.bottom_window = None;
+                    self.menus.toast = Some(("Fullscreen: combined screens (1 monitor)".to_owned(), Instant::now()));
+                }
+            }
+        }
+        if let Some(window) = &self.window {
+            window.set_fullscreen(entering_full.then_some(Fullscreen::Borderless(None)));
+            if let Some(bot_win) = &self.bottom_window {
+                bot_win.set_window_level(winit::window::WindowLevel::Normal);
+            }
+            if full && self.resize_after_full_screen && !self.maximized_before_full_screen {
+                let _ = window.request_inner_size(self.window_size());
+            }
         }
     }"#;
-            src = src.replace(present_end_needle, present_end_rep);
-            src.push_str(OFFICIAL_ICON_UPDATER_RS);
+            let old_toggle_fs_v1 = r#"    fn toggle_fullscreen(&mut self) {
+        if let Some(window) = &self.window {
+            let full = window.fullscreen().is_some();
+            if !full {
+                self.maximized_before_full_screen = window.is_maximized();
+                self.resize_after_full_screen = false;
+            }
+            // BLUEORB_TOGGLE_FULLSCREEN_DUAL_V1
+            let entering_full = !full;
+            window.set_fullscreen(entering_full.then_some(Fullscreen::Borderless(None)));
+            if let Some(bot_win) = &self.bottom_window {
+                let main_mon = window.current_monitor();
+                let bot_mon = bot_win.current_monitor();
+                let same_mon = match (&main_mon, &bot_mon) {
+                    (Some(m), Some(b)) => m.position() == b.position(),
+                    _ => true,
+                };
+                if entering_full && same_mon {
+                    bot_win.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+                    if let Some(mon) = &main_mon {
+                        let mpos = mon.position();
+                        let msize = mon.size();
+                        let bsz = bot_win.outer_size();
+                        let bw = (bsz.width as i32).max(320);
+                        let bh = (bsz.height as i32).max(240);
+                        let target_x = (mpos.x + msize.width as i32 - bw - 24).clamp(mpos.x, (mpos.x + msize.width as i32 - bw).max(mpos.x));
+                        let target_y = (mpos.y + msize.height as i32 - bh - 48).clamp(mpos.y, (mpos.y + msize.height as i32 - bh).max(mpos.y));
+                        bot_win.set_outer_position(winit::dpi::PhysicalPosition::new(target_x, target_y));
+                    }
+                    bot_win.set_visible(true);
+                } else if !entering_full {
+                    bot_win.set_window_level(winit::window::WindowLevel::Normal);
+                }
+            }
+            // the layout may have changed meanwhile, full screen kept the window's size thru it
+            // a window maximized b4 comes back maximized, resizing it would take it out of that
+            if full && self.resize_after_full_screen && !self.maximized_before_full_screen {
+                let _ = window.request_inner_size(self.window_size());
+            }
+        }
+    }"#;
+            let old_toggle_fs_orig = r#"    fn toggle_fullscreen(&mut self) {
+        if let Some(window) = &self.window {
+            let full = window.fullscreen().is_some();
+            if !full {
+                self.maximized_before_full_screen = window.is_maximized();
+                self.resize_after_full_screen = false;
+            }
+            window.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
+            // the layout may have changed meanwhile, full screen kept the window's size thru it
+            // a window maximized b4 comes back maximized, resizing it would take it out of that
+            if full && self.resize_after_full_screen && !self.maximized_before_full_screen {
+                let _ = window.request_inner_size(self.window_size());
+            }
+        }
+    }"#;
+            src = src.replace(old_toggle_fs_v1, new_toggle_fullscreen);
+            src = src.replace(old_toggle_fs_orig, new_toggle_fullscreen);
 
+            let new_sync_v2 = r#"    fn sync_bottom_window(&mut self, event_loop: &ActiveEventLoop) {
+        let wants_second = self.layout == Screens::SeparateWindows && self.game.is_some();
+        if wants_second && self.bottom_window.is_none() {
+            let (main_full, main_mon, other_mon) = match &self.window {
+                Some(main_win) => {
+                    let full = main_win.fullscreen().is_some();
+                    let cur = main_win.current_monitor();
+                    let other = cur.as_ref().and_then(|c| {
+                        event_loop.available_monitors().find(|m| m.position() != c.position())
+                    });
+                    (full, cur, other)
+                }
+                None => (false, None, None),
+            };
+            let exited_full_now = main_full && other_mon.is_none();
+            if exited_full_now {
+                if let Some(main_win) = &self.window {
+                    main_win.set_fullscreen(None);
+                    let _ = main_win.request_inner_size(self.window_size());
+                    if let Some(mon) = &main_mon {
+                        let mpos = mon.position();
+                        main_win.set_outer_position(winit::dpi::PhysicalPosition::new(mpos.x + 24, mpos.y + 48));
+                    }
+                }
+                self.menus.toast = Some(("Dual Window: On (exited fullscreen)".to_owned(), Instant::now()));
+            }
+            let bot_scale = self.scale.clamp(2, 4);
+            let bot_size = winit::dpi::LogicalSize::new(320 * bot_scale, 240 * bot_scale);
+            let attrs = Window::default_attributes()
+                .with_title("BlueOrb — Touch Screen")
+                .with_window_icon(blueorb_initial_window_icon(self.settings.blueorb_rom.as_deref()))
+                .with_inner_size(bot_size);
+            let shared = self.backend.as_ref().and_then(Backend::shared_device);
+            match Backend::create_secondary(event_loop, attrs, shared) {
+                Ok((win, mut bot_backend)) => {
+                    bot_backend.set_scaling(self.active.filter.screens(), self.active.integer_scale);
+                    bot_backend.set_orientation(self.orientation.screen_orientation());
+                    win.set_window_level(winit::window::WindowLevel::Normal);
+                    if let Some(main_win) = &self.window {
+                        let bot_outer = win.outer_size();
+                        let sf = main_win.scale_factor();
+                        let bot_w = if bot_outer.width > 0 {
+                            bot_outer.width as i32
+                        } else {
+                            ((320 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        let bot_h = if bot_outer.height > 0 {
+                            bot_outer.height as i32
+                        } else {
+                            ((240 * bot_scale) as f64 * sf).round() as i32
+                        };
+                        if main_full && !exited_full_now {
+                            if let Some(other) = &other_mon {
+                                let opos = other.position();
+                                win.set_outer_position(winit::dpi::PhysicalPosition::new(opos.x + 48, opos.y + 48));
+                            }
+                        } else if let Some(mon) = &main_mon {
+                            let mpos = mon.position();
+                            let msize = mon.size();
+                            let mon_left = mpos.x;
+                            let mon_top = mpos.y;
+                            let mon_right = mpos.x + msize.width as i32;
+                            let mon_bottom = mpos.y + msize.height as i32;
+                            let (pos, main_w) = if exited_full_now {
+                                let logical = self.window_size().to_logical::<u32>(sf);
+                                let mw = (logical.width as f64 * sf).round() as i32;
+                                (winit::dpi::PhysicalPosition::new(mpos.x + 24, mpos.y + 48), mw)
+                            } else {
+                                (
+                                    main_win.outer_position().unwrap_or(mpos),
+                                    if !main_win.is_maximized() {
+                                        main_win.outer_size().width as i32
+                                    } else {
+                                        0
+                                    },
+                                )
+                            };
+                            let target_pos = if main_w > 0 && pos.x + main_w + 16 + bot_w <= mon_right {
+                                winit::dpi::PhysicalPosition::new(
+                                    pos.x + main_w + 16,
+                                    pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else if let Some(other) = &other_mon {
+                                let opos = other.position();
+                                winit::dpi::PhysicalPosition::new(opos.x + 48, opos.y + 48)
+                            } else if main_w > 0 && pos.x - bot_w - 16 >= mon_left {
+                                winit::dpi::PhysicalPosition::new(
+                                    pos.x - bot_w - 16,
+                                    pos.y.clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            } else {
+                                winit::dpi::PhysicalPosition::new(
+                                    (pos.x + 48).clamp(mon_left, (mon_right - bot_w).max(mon_left)),
+                                    (pos.y + 48).clamp(mon_top, (mon_bottom - bot_h).max(mon_top)),
+                                )
+                            };
+                            win.set_outer_position(target_pos);
+                        } else if let Ok(pos) = main_win.outer_position() {
+                            win.set_outer_position(winit::dpi::PhysicalPosition::new(
+                                (pos.x + 48).max(0),
+                                (pos.y + 48).max(0),
+                            ));
+                        }
+                    }
+                    win.set_visible(true);
+                    win.focus_window();
+                    self.bottom_window = Some(win);
+                    self.bottom_backend = Some(bot_backend);
+                }
+                Err(err) => {
+                    log::warn!("could not open secondary touch window: {err}");
+                    self.menus.toast = Some((format!("Dual Window unavailable: {err}"), Instant::now()));
+                    let restore = self.last_combined_layout;
+                    self.set_layout(restore);
+                }
+            }
+        } else if !wants_second && self.bottom_window.is_some() {
+            self.bottom_mouse_down = false;
+            self.bottom_backend = None;
+            self.bottom_window = None;
+        }
+    }"#;
+            if let Some(start) = src.find("    fn sync_bottom_window(&mut self, event_loop: &ActiveEventLoop) {") {
+                if let Some(rel_end) = src[start..].find("\n\n    fn present(&mut self, event_loop: &ActiveEventLoop)") {
+                    src.replace_range(start..start + rel_end, new_sync_v2);
+                }
+            }
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_FAST_FORWARD_CAP_V1") {
+            src = src.replace(
+                "        if fast != self.fast_forwarding {\n            self.fast_forwarding = fast;\n            if !fast {\n                // back at the console's pace, w/ no sound piled up\n                if let Some(audio) = &self.audio {\n                    audio.clear();\n                }\n                self.next_frame = Instant::now();\n            }\n        }",
+                "        if fast != self.fast_forwarding {\n            self.fast_forwarding = fast;\n            self.next_frame = Instant::now();\n            self.next_shown = Instant::now();\n            if !fast {\n                // back at the console's pace, w/ no sound piled up\n                if let Some(audio) = &self.audio {\n                    audio.clear();\n                }\n            }\n        }",
+            );
+            src = src.replace(
+                "        self.next_frame += FRAME_TIME;\n        if fast {\n            // nothing to wait for\n            self.next_frame = Instant::now();\n        }",
+                "        // BLUEORB_FAST_FORWARD_CAP_V1\n        let ff_mult = self.active.fast_forward_speed.clamp(2, 8);\n        self.next_frame += if fast { FRAME_TIME / ff_mult } else { FRAME_TIME };",
+            );
             fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
         }
         if !src.contains("BLUEORB_SCALE_FACTOR_RESIZE") {
@@ -1763,7 +2486,38 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());",
-                "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());\n        let rpc_frame = self.coop.build_frame(&self.settings);\n        self.discord.update(\n            self.settings.discord_rpc,\n            &self.settings.discord_client_id,\n            discord::RpcSnapshot {\n                in_game: self.game.is_some(),\n                zone_id: rpc_frame.local_zone,\n                in_battle: !rpc_frame.in_overworld,\n                in_cutscene: rpc_frame.local_in_cutscene,\n                party_count: rpc_frame.local_party_count,\n                coop_members: self.room.as_ref().map_or(0, |r| r.members().len()),\n                is_leader: rpc_frame.local_is_leader,\n            },\n        );\n        self.menus.discord_state = self.discord.state();",
+                "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());\n        let rpc_frame = self.coop.build_frame(&self.settings, self.room.as_ref());\n        self.discord.update(\n            self.settings.discord_rpc,\n            &self.settings.discord_client_id,\n            discord::RpcSnapshot {\n                in_game: self.game.is_some(),\n                zone_id: rpc_frame.local_zone,\n                in_battle: !rpc_frame.in_overworld,\n                in_cutscene: rpc_frame.local_in_cutscene,\n                party_count: rpc_frame.local_party_count,\n                coop_members: self.room.as_ref().map_or(0, |r| r.members().len()),\n                is_leader: rpc_frame.local_is_leader,\n            },\n        );\n        self.menus.discord_state = self.discord.state();",
+            );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_COOP_MOD_V3") {
+            src = src.replace(
+                "// BLUEORB_COOP_MOD_V2",
+                "// BLUEORB_COOP_MOD_V2\n// BLUEORB_COOP_MOD_V3",
+            );
+            src = src.replace(
+                "                KeyCode::F4 => self.menus.multiplayer_open = !self.menus.multiplayer_open,",
+                "                KeyCode::F4 => {\n                    self.menus.multiplayer_open = !self.menus.multiplayer_open;\n                    if self.menus.multiplayer_open {\n                        self.menus.menu_open = false;\n                    }\n                }",
+            );
+            src = src.replace(
+                "            Action::OpenMultiplayer => self.menus.multiplayer_open = true,",
+                "            Action::OpenMultiplayer => {\n                self.menus.multiplayer_open = true;\n                self.menus.menu_open = false;\n            }",
+            );
+            src = src.replace(
+                "            Action::TeleportToLeader => self.coop.request_manual_warp(),",
+                "            Action::TeleportToLeader => {\n                self.menus.menu_open = false;\n                self.paused = false;\n                self.coop.request_manual_warp();\n            }\n            Action::TeleportToPeer(mac) => {\n                self.menus.menu_open = false;\n                self.paused = false;\n                self.coop.request_warp_to_peer(mac);\n            }",
+            );
+            src = src.replace(
+                "self.coop.build_frame(&self.settings)",
+                "self.coop.build_frame(&self.settings, self.room.as_ref())",
+            );
+            src = src.replace(
+                "                    if !menus.menu_open && settings.coop_enabled {\n                        if let Some(top_rect) = coop::top_screen_rect_points(window, settings, active_layout, active_top_shape) {\n                            coop::render_overworld_coop(ui.ctx(), top_rect, &coop_frame, settings);\n                        }\n                    }",
+                "                    if settings.coop_enabled && (!menus.menu_open || coop_frame.room_connected) {\n                        if let Some(top_rect) = coop::top_screen_rect_points(window, settings, active_layout, active_top_shape) {\n                            coop::render_overworld_coop(ui.ctx(), top_rect, &coop_frame, settings);\n                        }\n                    }",
+            );
+            src = src.replace(
+                "        match zakuro_core::room::Connection::join(address.trim(), &self.nickname(), &password) {\n            Ok(room) => {\n                self.room = Some(room);\n                self.link_room();\n            }\n            Err(error) => self.menus.message = Some(format!(\"Could not join the room, {error}.\")),\n        }",
+                "        let addr = address.trim();\n        let base_nick = self.nickname();\n        let mut joined: Option<(zakuro_core::room::Connection, String)> = None;\n        let mut last_err = String::new();\n        for attempt in 0..8u32 {\n            let nick = if attempt == 0 {\n                base_nick.clone()\n            } else {\n                let max_prefix = base_nick.chars().take(8).collect::<String>();\n                format!(\"{max_prefix}{}\", attempt + 1)\n            };\n            match zakuro_core::room::Connection::join(addr, &nick, &password) {\n                Ok(room) => {\n                    joined = Some((room, nick));\n                    break;\n                }\n                Err(error) => {\n                    let dup = error.contains(\"has that nickname\");\n                    last_err = error;\n                    if !dup {\n                        break;\n                    }\n                }\n            }\n        }\n        match joined {\n            Some((room, used_nick)) => {\n                let room_title = room.room().to_owned();\n                let count = room.members().len().max(1);\n                self.room = Some(room);\n                self.link_room();\n                self.menus.toast = Some((\n                    format!(\"Connected to '{room_title}' as {used_nick} ({count} online)\"),\n                    Instant::now(),\n                ));\n            }\n            None => {\n                self.menus.message = Some(format!(\"Could not join the room, {last_err}.\"));\n            }\n        }",
             );
             fs::write(&lib_rs, src).map_err(|e| e.to_string())?;
         }
