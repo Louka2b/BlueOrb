@@ -16,6 +16,9 @@ pub const ALPHA_SAPPHIRE_LOGO_URL: &str = "https://art.gametdb.com/3ds/coverHQ/U
 pub const BLUE_ORB_BADGE_URL: &str =
     "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/blue-orb.png";
 pub const GITHUB_REPO_URL: &str = "https://github.com/Louka2b/BlueOrb";
+/// Optional baked-in Discord Application ID ("Pokémon Alpha Sapphire").
+/// Can also be injected at build time via `BLUEORB_DISCORD_CLIENT_ID`.
+pub const DEFAULT_DISCORD_CLIENT_ID: &str = "";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RpcSnapshot {
@@ -111,15 +114,26 @@ impl Drop for DiscordRpcRuntime {
     }
 }
 
+fn builtin_client_id() -> &'static str {
+    let compile_time = option_env!("BLUEORB_DISCORD_CLIENT_ID").unwrap_or("").trim();
+    if !compile_time.is_empty() {
+        return compile_time;
+    }
+    DEFAULT_DISCORD_CLIENT_ID.trim()
+}
+
 fn resolved_client_id(configured: &str) -> String {
     let trimmed = configured.trim();
     if !trimmed.is_empty() {
         return trimmed.to_owned();
     }
-    std::env::var("BLUEORB_DISCORD_CLIENT_ID")
-        .unwrap_or_default()
-        .trim()
-        .to_owned()
+    if let Ok(runtime_env) = std::env::var("BLUEORB_DISCORD_CLIENT_ID") {
+        let rt = runtime_env.trim();
+        if !rt.is_empty() {
+            return rt.to_owned();
+        }
+    }
+    builtin_client_id().to_owned()
 }
 
 pub fn encode_ipc_frame(opcode: u32, payload: &str) -> Vec<u8> {
@@ -370,10 +384,11 @@ pub fn draw_discord_rpc_section(
     client_id: &mut String,
     state: RpcConnectionState,
 ) {
+    let has_builtin = !builtin_client_id().is_empty();
     let (status_txt, status_col) = match state {
         RpcConnectionState::Connected => ("Connected", Color32::from_rgb(122, 238, 174)),
         RpcConnectionState::Connecting => ("Connecting…", Color32::from_rgb(154, 204, 255)),
-        RpcConnectionState::NeedsClientId => ("App ID required", Color32::from_rgb(255, 214, 102)),
+        RpcConnectionState::NeedsClientId => ("1-time App ID needed", Color32::from_rgb(255, 214, 102)),
         RpcConnectionState::Unavailable => ("Discord not running", Color32::from_rgb(176, 184, 198)),
         RpcConnectionState::Disabled => ("Disabled", Color32::from_rgb(142, 146, 158)),
     };
@@ -389,19 +404,35 @@ pub fn draw_discord_rpc_section(
     });
     ui.add_space(4.0);
     ui.checkbox(enabled, "Show Pokémon Alpha Sapphire cover, Hoenn status & GitHub link on Discord");
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Discord App ID").size(12.0).color(Color32::from_rgb(184, 192, 208)));
-        ui.add(
-            egui::TextEdit::singleline(client_id)
-                .desired_width(190.0)
-                .hint_text("1234567890123456789"),
+    if has_builtin {
+        ui.collapsing("Advanced: Override built-in Discord App ID", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Custom App ID").size(11.5).color(Color32::from_rgb(184, 192, 208)));
+                ui.add(
+                    egui::TextEdit::singleline(client_id)
+                        .desired_width(180.0)
+                        .hint_text("Leave empty to use BlueOrb default"),
+                );
+            });
+        });
+    } else {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Discord App ID").size(12.0).color(Color32::from_rgb(184, 192, 208)));
+            ui.add(
+                egui::TextEdit::singleline(client_id)
+                    .desired_width(180.0)
+                    .hint_text("Paste Application ID"),
+            );
+            if ui.button("Open Portal").clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab("https://discord.com/developers/applications"));
+            }
+        });
+        ui.label(
+            RichText::new("Discord requires a registered App ID (no assets needed — create a free app named \"Pokémon Alpha Sapphire\" once and paste its ID).")
+                .size(10.5)
+                .color(Color32::from_rgb(142, 152, 170)),
         );
-    });
-    ui.label(
-        RichText::new("Create a free app at discord.com/developers/applications named \"Pokémon Alpha Sapphire\" and paste its Application ID.")
-            .size(10.5)
-            .color(Color32::from_rgb(142, 152, 170)),
-    );
+    }
 }
 
 #[cfg(test)]

@@ -81,6 +81,8 @@ jobs:
 
       - name: Build 100% Legal Zero-ROM Standalone BlueOrb GUI App
         shell: pwsh
+        env:
+          BLUEORB_DISCORD_CLIENT_ID: ${{ vars.BLUEORB_DISCORD_CLIENT_ID }}
         run: |
           if ($IsWindows) {
             & ".\tools\blueorb\target\release\blueorb.exe" release
