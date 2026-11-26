@@ -618,7 +618,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         if !src.contains("BLUEORB_WIDE_CONSOLE_MENU") {
             src = src.replace(
                 "    CheatsFolder,\n}",
-                "    CheatsFolder,\n    PickRomFile,\n    CleanResiduals,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
+                "    CheatsFolder,\n    PickRomFile,\n    CleanResiduals,\n    InstallToApplications,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
             );
             src = src.replace(
                 "    pub menu_open: bool,",
@@ -1164,6 +1164,10 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 }
             }
             Action::CleanResiduals => self.clean_residual_files(),
+            Action::InstallToApplications => {
+                #[cfg(target_os = "macos")]
+                blueorb_move_bundle_to_applications_now();
+            }
             Action::ToggleDualWindows => self.toggle_dual_windows(),
             Action::SetLayout(layout) => self.set_layout(layout),
             Action::SetTopShape(shape) => self.set_top_shape(shape),
@@ -1421,16 +1425,14 @@ fn apply_blueorb_console_theme(ctx: &egui::Context) {
 }
 "#;
 
-const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desktop launcher:
+const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desktop launcher with royalty-free Sapphire Ocean vista:
     /// - First launch: drop or select a decrypted .3ds ROM -> automatic native AOT build -> launches straight into the game
     /// - Subsequent launches: boots directly into the game
     pub fn library(&mut self, ui: &mut egui::Ui, library: &Library, settings: &Settings, jobs: &[Job], waiting: &[Wanted]) -> Vec<Action> {
         let mut actions = Vec::new();
         let _ = (
             self.background.get(ui.ctx(), None),
-            cover(Vec2::ONE, [1, 1]),
             idle(library.games.iter().map(Game::wanted), jobs, waiting),
-            &mut self.icons,
             ICON_SIZE,
         );
 
@@ -1440,22 +1442,37 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desk
             _ => None,
         });
         let hovering_file = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
+        let show_install_apps = can_install_to_applications();
 
         // Top toolbar
         egui::Panel::top("blueorb_launcher_topbar")
             .resizable(false)
-            .exact_size(38.0)
+            .exact_size(40.0)
             .show_separator_line(true)
-            .frame(egui::Frame::NONE.fill(Color32::from_rgb(19, 19, 22)).inner_margin(egui::Margin::symmetric(14, 6)))
+            .frame(
+                egui::Frame::NONE
+                    .fill(Color32::from_rgba_unmultiplied(12, 16, 26, 224))
+                    .inner_margin(egui::Margin::symmetric(14, 7)),
+            )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), egui::Sense::hover());
                     paint_diveball_emblem(ui.painter(), icon_rect.center(), 8.5);
-                    ui.label(RichText::new("BlueOrb").size(13.5).strong().color(Color32::from_rgb(236, 236, 240)));
-                    ui.label(RichText::new("·  Static AOT Recompiler").size(12.0).color(Color32::from_rgb(128, 128, 138)));
+                    ui.label(RichText::new("BlueOrb").size(13.5).strong().color(Color32::from_rgb(236, 240, 248)));
+                    ui.label(RichText::new("·  Native AOT Port").size(12.0).color(Color32::from_rgb(138, 148, 168)));
 
-                    let rem = (ui.available_width() - 96.0).max(0.0);
+                    let mut buttons_w = 96.0 + 8.0 + 96.0;
+                    if show_install_apps {
+                        buttons_w += 158.0 + 8.0;
+                    }
+                    let rem = (ui.available_width() - buttons_w).max(0.0);
                     ui.add_space(rem);
+                    if show_install_apps && console_secondary_button(ui, 158.0, 25.0, "Install to /Applications", true) {
+                        actions.push(Action::InstallToApplications);
+                    }
+                    if console_secondary_button(ui, 96.0, 25.0, "Clean Cache", active_job.is_none()) {
+                        actions.push(Action::CleanResiduals);
+                    }
                     if console_secondary_button(ui, 96.0, 25.0, "Open ROM…", active_job.is_none()) {
                         actions.push(Action::PickRomFile);
                     }
@@ -1484,71 +1501,115 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desk
             .resizable(false)
             .exact_size(24.0)
             .show_separator_line(true)
-            .frame(egui::Frame::NONE.fill(Color32::from_rgb(17, 17, 20)).inner_margin(egui::Margin::symmetric(14, 3)))
+            .frame(
+                egui::Frame::NONE
+                    .fill(Color32::from_rgba_unmultiplied(10, 14, 22, 232))
+                    .inner_margin(egui::Margin::symmetric(14, 3)),
+            )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&status_left).size(11.5).monospace().color(Color32::from_rgb(146, 146, 156)));
+                    ui.label(RichText::new(&status_left).size(11.5).monospace().color(Color32::from_rgb(154, 164, 180)));
                     let right_lbl = format!("{}  ·  Vulkan", std::env::consts::ARCH);
                     let rem = (ui.available_width() - 120.0).max(0.0);
                     ui.add_space(rem);
-                    ui.label(RichText::new(right_lbl).size(11.5).monospace().color(Color32::from_rgb(112, 112, 122)));
+                    ui.label(RichText::new(right_lbl).size(11.5).monospace().color(Color32::from_rgb(120, 130, 148)));
                 });
             });
 
-        // Main workspace
+        if let Some((text, since)) = &self.toast {
+            if since.elapsed() < std::time::Duration::from_millis(2600) {
+                let ctx = ui.ctx().clone();
+                egui::Area::new(egui::Id::new("launcher_toast"))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 50.0))
+                    .interactable(false)
+                    .show(&ctx, |ui| {
+                        egui::Frame::NONE
+                            .fill(Color32::from_rgba_unmultiplied(14, 19, 30, 236))
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 175, 245, 72)))
+                            .corner_radius(egui::CornerRadius::same(5))
+                            .inner_margin(egui::Margin::symmetric(12, 6))
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(text).size(13.0).color(Color32::from_rgb(236, 242, 250)));
+                            });
+                    });
+                ctx.request_repaint();
+            } else {
+                self.toast = None;
+            }
+        }
+
+        // Main workspace with cached royalty-free Sapphire Ocean scenic vista
         let ws_frame = egui::Frame::NONE
-            .fill(Color32::from_rgb(24, 24, 27))
+            .fill(Color32::TRANSPARENT)
             .inner_margin(egui::Margin::symmetric(24, 20));
 
         egui::CentralPanel::default().frame(ws_frame).show(ui, |ui| {
+            let full_rect = ui.max_rect();
+            let ocean_tex = self.icons.entry(PathBuf::from("__blueorb_ocean_bg__")).or_insert_with(|| {
+                let img = blueorb_generate_ocean_scenery(640, 360);
+                ui.ctx().load_texture("blueorb_ocean_bg", img, egui::TextureOptions::LINEAR)
+            });
+            let uv = cover(full_rect.size(), [640, 360]);
+            ui.painter().image(ocean_tex.id(), full_rect, uv, Color32::WHITE);
+
             let avail_w = ui.available_width();
             let avail_h = ui.available_height();
-            let box_w = (avail_w - 8.0).clamp(260.0, 460.0);
+            let box_w = (avail_w - 8.0).clamp(260.0, 470.0);
 
             if let Some(job) = active_job {
                 ui.ctx().request_repaint();
                 let top_pad = ((avail_h - 150.0) * 0.45).max(8.0);
                 ui.vertical_centered(|ui| {
                     ui.add_space(top_pad);
-                    console_card(ui, box_w, |ui, cw| {
-                        let stage = job.stage();
-                        let mins = job.elapsed().as_secs() / 60;
-                        let secs = job.elapsed().as_secs() % 60;
+                    egui::Frame::NONE
+                        .fill(Color32::from_rgba_unmultiplied(15, 20, 30, 230))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 175, 245, 56)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin::same(18))
+                        .show(ui, |ui| {
+                            let cw = (box_w - 38.0).max(160.0);
+                            ui.set_min_width(cw);
+                            ui.set_max_width(cw);
 
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&job.name).size(14.0).strong().color(Color32::from_rgb(236, 236, 240)));
-                            let rem = (ui.available_width() - 48.0).max(0.0);
-                            ui.add_space(rem);
-                            ui.label(RichText::new(format!("{mins:02}:{secs:02}")).size(12.0).monospace().color(Color32::from_rgb(146, 146, 156)));
-                        });
+                            let stage = job.stage();
+                            let mins = job.elapsed().as_secs() / 60;
+                            let secs = job.elapsed().as_secs() % 60;
 
-                        ui.add_space(8.0);
-                        let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(cw, 6.0), egui::Sense::hover());
-                        if ui.is_rect_visible(bar_rect) {
-                            ui.painter().rect_filled(bar_rect, egui::CornerRadius::same(2), Color32::from_rgb(17, 17, 20));
-                            let fill_w = (cw * stage.fraction().clamp(0.0, 1.0)).max(2.0);
-                            let fill_rect = egui::Rect::from_min_size(bar_rect.min, Vec2::new(fill_w, bar_rect.height()));
-                            ui.painter().rect_filled(fill_rect, egui::CornerRadius::same(2), Color32::from_rgb(72, 126, 198));
-                        }
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&job.name).size(14.0).strong().color(Color32::from_rgb(238, 242, 248)));
+                                let rem = (ui.available_width() - 48.0).max(0.0);
+                                ui.add_space(rem);
+                                ui.label(RichText::new(format!("{mins:02}:{secs:02}")).size(12.0).monospace().color(Color32::from_rgb(154, 166, 186)));
+                            });
 
-                        ui.add_space(10.0);
-                        let step_txt = match &stage {
-                            Stage::Downloading(p) => format!("Downloading portable C toolchain ({:.0}%)", p * 100.0),
-                            Stage::Generating => "Generating C from ARM11 & CRO modules".to_owned(),
-                            Stage::Compiling { done, total } => format!("Compiling C units ({done} / {total})"),
-                            Stage::Installing => "Linking shared library".to_owned(),
-                            Stage::Done => "Starting game...".to_owned(),
-                            Stage::Failed(e) => format!("Failed: {e}"),
-                        };
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(step_txt).size(12.0).monospace().color(Color32::from_rgb(164, 164, 174)));
-                            let rem = (ui.available_width() - 78.0).max(0.0);
-                            ui.add_space(rem);
-                            if console_secondary_button(ui, 76.0, 26.0, "Cancel", true) {
-                                actions.push(Action::CancelRecompile(job.program_id));
+                            ui.add_space(8.0);
+                            let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(cw, 7.0), egui::Sense::hover());
+                            if ui.is_rect_visible(bar_rect) {
+                                ui.painter().rect_filled(bar_rect, egui::CornerRadius::same(2), Color32::from_rgb(12, 16, 24));
+                                let fill_w = (cw * stage.fraction().clamp(0.0, 1.0)).max(2.0);
+                                let fill_rect = egui::Rect::from_min_size(bar_rect.min, Vec2::new(fill_w, bar_rect.height()));
+                                ui.painter().rect_filled(fill_rect, egui::CornerRadius::same(2), Color32::from_rgb(76, 148, 232));
                             }
+
+                            ui.add_space(10.0);
+                            let step_txt = match &stage {
+                                Stage::Downloading(p) => format!("Downloading portable C toolchain ({:.0}%)", p * 100.0),
+                                Stage::Generating => "Generating C from ARM11 & CRO modules".to_owned(),
+                                Stage::Compiling { done, total } => format!("Compiling C units ({done} / {total})"),
+                                Stage::Installing => "Linking shared library".to_owned(),
+                                Stage::Done => "Starting game...".to_owned(),
+                                Stage::Failed(e) => format!("Failed: {e}"),
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(step_txt).size(12.0).monospace().color(Color32::from_rgb(172, 182, 198)));
+                                let rem = (ui.available_width() - 78.0).max(0.0);
+                                ui.add_space(rem);
+                                if console_secondary_button(ui, 76.0, 26.0, "Cancel", true) {
+                                    actions.push(Action::CancelRecompile(job.program_id));
+                                }
+                            });
                         });
-                    });
                 });
             } else {
                 let top_pad = ((avail_h - 210.0) * 0.44).max(8.0);
@@ -1556,20 +1617,20 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desk
                     ui.add_space(top_pad);
 
                     let border = if hovering_file {
-                        egui::Stroke::new(1.5, Color32::from_rgb(82, 134, 204))
+                        egui::Stroke::new(1.5, Color32::from_rgb(104, 178, 255))
                     } else {
-                        egui::Stroke::new(1.0, Color32::from_rgb(52, 52, 60))
+                        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 175, 245, 52))
                     };
                     let fill = if hovering_file {
-                        Color32::from_rgb(28, 33, 42)
+                        Color32::from_rgba_unmultiplied(20, 32, 50, 236)
                     } else {
-                        Color32::from_rgb(29, 29, 33)
+                        Color32::from_rgba_unmultiplied(15, 20, 30, 224)
                     };
 
                     egui::Frame::NONE
                         .fill(fill)
                         .stroke(border)
-                        .corner_radius(egui::CornerRadius::same(5))
+                        .corner_radius(egui::CornerRadius::same(6))
                         .inner_margin(egui::Margin::symmetric(24, 24))
                         .show(ui, |ui| {
                             let cw = (box_w - 50.0).max(180.0);
@@ -1577,13 +1638,13 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desk
                             ui.set_max_width(cw);
 
                             ui.vertical_centered(|ui| {
-                                let (emb_rect, _) = ui.allocate_exact_size(Vec2::new(44.0, 44.0), egui::Sense::hover());
-                                paint_diveball_emblem(ui.painter(), emb_rect.center(), 20.0);
+                                let (emb_rect, _) = ui.allocate_exact_size(Vec2::new(46.0, 46.0), egui::Sense::hover());
+                                paint_diveball_emblem(ui.painter(), emb_rect.center(), 21.0);
 
                                 ui.add_space(8.0);
                                 if let Some(saved_rom) = settings.blueorb_rom.as_ref().filter(|p| p.is_file()) {
                                     let fname = saved_rom.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                    ui.label(RichText::new(&fname).size(13.5).strong().color(Color32::from_rgb(236, 236, 240)));
+                                    ui.label(RichText::new(&fname).size(13.5).strong().color(Color32::from_rgb(238, 242, 248)));
                                     ui.add_space(12.0);
                                     ui.horizontal(|ui| {
                                         let pad_l = ((cw - 218.0) * 0.5).max(0.0);
@@ -1596,22 +1657,22 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Clean, utilitarian native desk
                                         }
                                     });
                                 } else {
-                                    ui.label(RichText::new("No ROM Loaded").size(14.5).strong().color(Color32::from_rgb(232, 232, 238)));
-                                    ui.add_space(2.0);
+                                    ui.label(RichText::new("BlueOrb Launcher").size(15.0).strong().color(Color32::from_rgb(238, 242, 248)));
+                                    ui.add_space(3.0);
                                     ui.label(
-                                        RichText::new("Drop a decrypted .3ds / .cci file here or select one from disk.")
+                                        RichText::new("Drop a decrypted .3ds / .cci ROM here or select one from disk.")
                                             .size(12.5)
-                                            .color(Color32::from_rgb(142, 142, 152)),
+                                            .color(Color32::from_rgb(162, 172, 190)),
                                     );
                                     ui.add_space(14.0);
-                                    if console_secondary_button(ui, 140.0, 32.0, "Select ROM…", true) {
+                                    if console_primary_button(ui, 146.0, 32.0, "Select ROM…") {
                                         actions.push(Action::PickRomFile);
                                     }
                                 }
 
                                 if let Some((_, ref err)) = failed_job {
                                     ui.add_space(10.0);
-                                    ui.label(RichText::new(err).size(12.0).color(Color32::from_rgb(238, 128, 128)));
+                                    ui.label(RichText::new(err).size(12.0).color(Color32::from_rgb(248, 138, 138)));
                                 }
                             });
                         });
@@ -2192,6 +2253,11 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Cl
                     }
                 });
 
+                ui.add_space(8.0);
+                if console_secondary_button(ui, width, 32.0, "Clean Residual Build Files…", true) {
+                    actions.push(Action::CleanResiduals);
+                }
+
                 ui.add_space(12.0);
 
                 console_card(ui, width, |ui, cw| {
@@ -2259,6 +2325,158 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Cl
 const WIDE_CONSOLE_WIDGET_HELPERS_RS: &str = r#"
 fn friendly_control_name(raw: &str) -> &str {
     raw
+}
+
+fn can_install_to_applications() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::var_os("CI").is_some() {
+            return false;
+        }
+        let Ok(exe) = std::env::current_exe() else { return false };
+        let Some(bundle) = exe.ancestors().nth(3) else { return false };
+        if bundle.extension().and_then(|e| e.to_str()) != Some("app") {
+            return false;
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        !bundle.starts_with("/Applications") && !bundle.starts_with(home.join("Applications"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Generates an original, 100% royalty-free scenic Hoenn-inspired Sapphire Ocean & Underwater Shrine background image.
+fn blueorb_generate_ocean_scenery(w: usize, h: usize) -> egui::ColorImage {
+    let mut pixels = vec![0u8; w * h * 4];
+    let wf = w as f32;
+    let hf = h as f32;
+
+    for y in 0..h {
+        let ny = (y as f32 + 0.5) / hf; // 0 = top, 1 = bottom
+        for x in 0..w {
+            let nx = (x as f32 + 0.5) / wf;
+            let idx = (y * w + x) * 4;
+
+            // Gentle ocean surface line across y ~ 0.24
+            let horizon = 0.245 + 0.005 * (nx * 14.0).sin() + 0.003 * (nx * 29.0).cos();
+
+            let (mut r, mut g, mut b) = if ny < horizon {
+                // Twilight sapphire sky gradient above ocean horizon
+                let t = (ny / horizon).clamp(0.0, 1.0);
+                let sky_r = 12.0 + 36.0 * t * t;
+                let sky_g = 24.0 + 78.0 * t * t;
+                let sky_b = 58.0 + 114.0 * t;
+
+                // Subtle twilight stars near the upper sky
+                let sx = (nx * 180.0).floor();
+                let sy = (ny * 120.0).floor();
+                let hash = ((sx * 127.1 + sy * 311.7).sin() * 43758.547).fract().abs();
+                let star = if ny < horizon * 0.72 && hash > 0.9965 {
+                    (1.0 - ny / (horizon * 0.75)) * 120.0
+                } else {
+                    0.0
+                };
+
+                // Horizon cyan mist glow around x ~ 0.52
+                let sun_dx = (nx - 0.52) / 0.36;
+                let glow = (1.0 - sun_dx * sun_dx).clamp(0.0, 1.0) * t * t * t;
+
+                // Distant volcanic island silhouettes at horizon
+                let island_l = (-((nx - 0.14) / 0.09).powi(2)).exp() * 0.075
+                    + (-((nx - 0.23) / 0.05).powi(2)).exp() * 0.04;
+                let island_r = (-((nx - 0.85) / 0.10).powi(2)).exp() * 0.085
+                    + (-((nx - 0.74) / 0.05).powi(2)).exp() * 0.038;
+                let ridge_y = horizon - (island_l + island_r).max(0.0);
+                if ny > ridge_y {
+                    (11.0, 22.0, 44.0)
+                } else {
+                    (
+                        sky_r + glow * 45.0 + star,
+                        sky_g + glow * 105.0 + star,
+                        sky_b + glow * 135.0 + star,
+                    )
+                }
+            } else {
+                // Deep cobalt-to-abyssal sapphire ocean water depth
+                let depth = ((ny - horizon) / (1.0 - horizon)).clamp(0.0, 1.0);
+                let mut wr = 18.0 * (1.0 - depth) + 5.0 * depth;
+                let mut wg = 86.0 * (1.0 - depth).powf(1.2) + 18.0 * depth;
+                let mut wb = 166.0 * (1.0 - depth).powf(0.85) + 42.0 * depth;
+
+                // Crisp bright surface foam/shimmer along the waterline
+                let surf = (-(ny - horizon) * 65.0).exp();
+                let shimmer = 0.5 + 0.5 * (nx * 46.0 + (ny * 90.0).sin()).sin();
+                wr += surf * (42.0 + 38.0 * shimmer);
+                wg += surf * (110.0 + 55.0 * shimmer);
+                wb += surf * (135.0 + 35.0 * shimmer);
+
+                // Volumetric diagonal sunbeams piercing down into the water
+                let proj = (nx - 0.52) - (ny - horizon) * 0.34;
+                let beams = (0.5 + 0.5 * (proj * 26.0 + (proj * 9.0).sin() * 0.6).cos()).powf(3.0);
+                let beam_env = (-((proj) / 0.42).powi(2)).exp() * (1.0 - depth * 0.82);
+                let ray = beams * beam_env;
+                wr += ray * 24.0;
+                wg += ray * 68.0;
+                wb += ray * 98.0;
+
+                // Subtle underwater caustics in upper half of water column
+                let c1 = ((nx * 24.0 + ny * 18.0).sin() * (nx * 17.0 - ny * 26.0).cos()).abs();
+                let caustic = c1.powf(4.0) * (1.0 - depth).powi(2) * 0.42;
+                wg += caustic * 54.0;
+                wb += caustic * 78.0;
+
+                // Silhouetted ancient submerged stone pillars on far left & right edges (keeps center open)
+                let pillar_l = nx > 0.04 && nx < 0.105 && ny > 0.44;
+                let pillar_r = nx > 0.895 && nx < 0.96 && ny > 0.40;
+                let step_l = nx < 0.145 && ny > 0.84;
+                let step_r = nx > 0.855 && ny > 0.82;
+                if pillar_l || pillar_r || step_l || step_r {
+                    let stone_grad = 0.7 + 0.3 * (1.0 - depth);
+                    wr = 7.0 * stone_grad;
+                    wg = 18.0 * stone_grad;
+                    wb = 38.0 * stone_grad;
+
+                    // Faint glowing cyan geometric rune bands on the pillars
+                    let on_l_band = pillar_l && ((ny - 0.56).abs() < 0.008 || (ny - 0.68).abs() < 0.008);
+                    let on_r_band = pillar_r && ((ny - 0.52).abs() < 0.008 || (ny - 0.64).abs() < 0.008);
+                    if (on_l_band && (nx - 0.0725).abs() < 0.018) || (on_r_band && (nx - 0.9275).abs() < 0.018) {
+                        wr = 52.0;
+                        wg = 195.0;
+                        wb = 248.0;
+                    }
+                }
+
+                // Sandy seabed floor along bottom edge
+                let floor_y = 0.91 + 0.018 * (nx * 9.0).sin() + 0.008 * (nx * 23.0).cos();
+                if ny > floor_y {
+                    let f_blend = ((ny - floor_y) / 0.04).clamp(0.0, 1.0);
+                    let sand = 0.82 + 0.18 * (nx * 35.0 + ny * 40.0).sin();
+                    wr = wr * (1.0 - f_blend) + (12.0 * sand) * f_blend;
+                    wg = wg * (1.0 - f_blend) + (30.0 * sand) * f_blend;
+                    wb = wb * (1.0 - f_blend) + (58.0 * sand) * f_blend;
+                }
+
+                (wr, wg, wb)
+            };
+
+            // Soft vignette so centered launcher UI panel pops with crisp readability
+            let vx = (nx - 0.5) * 2.0;
+            let vy = (ny - 0.5) * 2.0;
+            let vig = (1.0 - (vx * vx + vy * vy) * 0.24).clamp(0.55, 1.0);
+            r *= vig;
+            g *= vig;
+            b *= vig;
+
+            pixels[idx] = r.round().clamp(0.0, 255.0) as u8;
+            pixels[idx + 1] = g.round().clamp(0.0, 255.0) as u8;
+            pixels[idx + 2] = b.round().clamp(0.0, 255.0) as u8;
+            pixels[idx + 3] = 255;
+        }
+    }
+
+    egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels)
 }
 
 fn paint_diveball_emblem(painter: &egui::Painter, center: egui::Pos2, r: f32) {
@@ -2691,6 +2909,9 @@ const MOVE_TO_APPLICATIONS_RS: &str = r#"
 fn blueorb_offer_move_to_applications() {
     use std::path::{Path, PathBuf};
 
+    if std::env::var_os("CI").is_some() || std::env::args().skip(1).any(|a| a.starts_with('-')) {
+        return;
+    }
     let Ok(exe) = std::env::current_exe() else { return };
     // .../BlueOrb.app/Contents/MacOS/BlueOrb
     let Some(bundle) = exe.ancestors().nth(3).map(Path::to_path_buf) else { return };
@@ -2760,6 +2981,51 @@ fn blueorb_offer_move_to_applications() {
 "#;
 
 const OFFICIAL_ICON_UPDATER_RS: &str = r#"
+#[cfg(target_os = "macos")]
+fn blueorb_move_bundle_to_applications_now() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(bundle) = exe.ancestors().nth(3).map(Path::to_path_buf) else { return };
+    if bundle.extension().and_then(|e| e.to_str()) != Some("app") {
+        return;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    if bundle.starts_with("/Applications") || bundle.starts_with(home.join("Applications")) {
+        return;
+    }
+    let name = bundle.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "BlueOrb.app".into());
+    let copy_to = |dir: &Path| -> Option<PathBuf> {
+        let dest = dir.join(&name);
+        if dest.exists() && std::fs::remove_dir_all(&dest).is_err() {
+            return None;
+        }
+        let ok = std::process::Command::new("/usr/bin/ditto")
+            .arg(&bundle)
+            .arg(&dest)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(dest)
+    };
+    let user_apps = home.join("Applications");
+    let dest = copy_to(Path::new("/Applications")).or_else(|| {
+        let _ = std::fs::create_dir_all(&user_apps);
+        copy_to(&user_apps)
+    });
+    let Some(dest) = dest else {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Could not move BlueOrb")
+            .set_description("BlueOrb could not be copied to your Applications folder. You can drag it there manually.")
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+        return;
+    };
+    if !bundle.to_string_lossy().contains("/AppTranslocation/") {
+        let _ = std::fs::remove_dir_all(&bundle);
+    }
+    if std::process::Command::new("/usr/bin/open").arg("-n").arg(&dest).spawn().is_ok() {
+        std::process::exit(0);
+    }
+}
 /// Returns the official Alpha Sapphire ROM icon if a recompiled ROM is already configured,
 /// or the procedural Sapphire Dive-Ball launcher icon prior to recompilation.
 fn blueorb_initial_window_icon(rom_path: Option<&Path>) -> Option<winit::window::Icon> {

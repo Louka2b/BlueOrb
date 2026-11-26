@@ -22,53 +22,53 @@ use crate::standalone::{StandaloneOptions, TargetPlatform};
 
 fn print_help() {
     println!(
-        "BlueOrb v0.2.0 — Portage Standalone PC/Mac & Décompilation Pokémon Saphir Alpha
-Compatible nativement : macOS (Apple Silicon ARM64 / Intel), Linux (x86_64), Windows (x86_64)
+        "BlueOrb v0.2.0 — Native Static AOT Port & Decompilation for Pokémon Alpha Sapphire
+Native targets: macOS (Apple Silicon ARM64 / Intel), Linux (x86_64), Windows (x86_64)
 
-UTILISATION :
-  blueorb <commande> [options]
+USAGE:
+  blueorb <command> [options]
 
-COMMANDES JEU STANDALONE & INSTALLATEUR GUI :
-  release [--launch]             Crée l'application GUI tout-en-un 100% légale (ZÉRO ROM / ZÉRO terminal) :
+STANDALONE APP & GUI INSTALLER COMMANDS:
+  release [--launch]             Builds the 100% legal all-in-one GUI app (ZERO ROM / ZERO terminal):
                                    - macOS   : dist/BlueOrb.app
                                    - Windows : dist/BlueOrb/BlueOrb.exe
                                    - Linux   : dist/BlueOrb/BlueOrb
-                                 (1er lancement : demande la ROM .3ds et recompile seul ; ensuite : lance le jeu direct !)
-  gui, installer [--no-launch]   Compile et ouvre l'Installateur Graphique (glisser-déposer la ROM .3ds -> tout se fait seul !)
+                                 (First launch asks for your .3ds ROM, recompiles natively, then auto-launches)
+  gui, installer [--no-launch]   Builds and opens the GUI Installer (drop .3ds ROM -> builds standalone app)
                                    - macOS   : dist/BlueOrb Installer.app
                                    - Windows : dist/BlueOrb Installer/BlueOrb-Installer.exe
                                    - Linux   : dist/BlueOrb Installer/BlueOrb-Installer
-  app [options]                  Crée l'application autonome prête à jouer dans dist/ :
+  app [options]                  Builds the pre-linked standalone app bundle in dist/:
                                    - macOS   : dist/Pokemon Alpha Sapphire.app
                                    - Windows : dist/Pokemon Alpha Sapphire/Pokemon Alpha Sapphire.exe
                                    - Linux   : dist/Pokemon Alpha Sapphire/PokemonAlphaSapphire
-  play [options]                 Met à jour l'app autonome et lance Pokémon Saphir Alpha immédiatement !
-    Options de `app` / `play` :
-      --ultrawide, --21:9        Active le vrai rendu 3D Ultra-Wide 21:9 sans étirement
-      --super-ultrawide, --32:9  Active le rendu Super Ultra-Wide 32:9
-      --widescreen, --16:9       Active le rendu Widescreen 16:9
-      --5:3, --console-aspect    Conserve le format 3DS classique 5:3 (par défaut)
-      --dual-windows             Sépare l'écran du haut et l'écran tactile du bas sur 2 fenêtres !
-      --res <1..10>              Facteur de résolution 3D interne GPU (défaut: 5 = QHD, 8 = 4K+)
-      --60fps                    Active en plus le mode Turbo 2x au démarrage
-      --with-outlines            Conserve les contours noirs 3DS d'origine (désactivés en HD par défaut)
-      --portable                 Copie complète de la ROM dans le bundle (pour clé USB / autre PC)
-      --lang <fr|en|ja>          Langue système du jeu (défaut: fr)
+  play [options]                 Updates the standalone app and launches immediately
+    Options for `app` / `play`:
+      --ultrawide, --21:9        Enables Hor+ 21:9 Ultrawide 3D rendering
+      --super-ultrawide, --32:9  Enables Hor+ 32:9 Super Ultrawide 3D rendering
+      --widescreen, --16:9       Enables Hor+ 16:9 Widescreen 3D rendering
+      --5:3, --console-aspect    Uses native 5:3 3DS top screen aspect ratio (default)
+      --dual-windows             Detaches bottom touch screen into a second window
+      --res <1..10>              Internal 3D GPU resolution factor (default: 5 = 1440p, 8 = 4K+)
+      --60fps                    Enables 2x game speed patch on startup
+      --with-outlines            Keeps original 3DS black outlines (disabled in HD by default)
+      --portable                 Copies ROM assets directly into the bundle
+      --lang <en|fr|ja|de|es|it> Console system language (default: en)
 
-COMMANDES DÉCOMPILATION & RECOMPILATION :
-  doctor                         Vérifie la toolchain ARM (as, ld, objcopy, clang++/g++) sur votre OS
-  setup [--rom <fichier.3ds>]    Pipeline complet : extract -> analyze -> split -> build -> check
-  extract [--rom <fichier.3ds>]  Extrait code.bin (BLZ), ExHeader, ExeFS et les 145 Dll*.cro
-  analyze                        Analyse code.bin + static.crs + 145 Dll*.cro -> config/symbols.txt
-  split                          Découpe code.bin en unités ASM GNU ARMv6K (asm/) + build/ldscript.ld
-  build [--rebuild]              Compile en parallèle C++ (src/) + ASM (asm/) -> build/code.bin
-  check                          Vérifie le SHA-256 bit-à-bit de build/code.bin
-  pack [--out <rebuilt.3ds>]     Génère le mod LayeredFS et reconstruit une ROM .3ds
-  progress                       Affiche la progression de la décompilation C++
-  inspect <sym_ou_addr> [taille] Désassemble proprement une fonction
-  diff <sym_ou_addr>             Compare original vs C++ instruction par instruction
-  new-unit <sym_ou_addr> <nom>   Crée un squelette C++ dans src/<nom>.cpp
-  cro [nom_module]               Liste ou inspecte les 145 modules dynamiques Dll*.cro
+DECOMPILATION & RECOMPILATION COMMANDS:
+  doctor                         Checks ARM toolchain (as, ld, objcopy, clang++/g++)
+  setup [--rom <file.3ds>]       Full pipeline: extract -> analyze -> split -> build -> check
+  extract [--rom <file.3ds>]     Extracts code.bin (BLZ), ExHeader, ExeFS, and 145 Dll*.cro
+  analyze                        Analyzes code.bin + static.crs + 145 Dll*.cro -> config/symbols.txt
+  split                          Splits code.bin into GNU ARMv6K ASM units (asm/) + build/ldscript.ld
+  build [--rebuild]              Compiles C++ (src/) + ASM (asm/) -> build/code.bin
+  check                          Verifies bit-for-bit SHA-256 match of build/code.bin
+  pack [--out <rebuilt.3ds>]     Generates LayeredFS mod or rebuilds a .3ds ROM
+  progress                       Shows C++ decompilation progress
+  inspect <sym_or_addr> [bytes]  Disassembles a function
+  diff <sym_or_addr>             Compares original vs C++ instructions
+  new-unit <sym_or_addr> <name>  Creates a C++ skeleton in src/<name>.cpp
+  cro [module_name]              Lists or inspects the 145 dynamic Dll*.cro modules
 "
     );
 }
@@ -165,7 +165,7 @@ fn parse_standalone_opts(args: &[String], root: &Path, cfg: &ProjectConfig) -> R
                     "de" => 3,
                     "it" => 4,
                     "es" => 5,
-                    _ => 2,
+                    _ => 1,
                 };
                 i += 2;
             }

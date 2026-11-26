@@ -1,57 +1,58 @@
-# BlueOrb — Recompilateur Natif & Remaster HD / Ultra-Wide (Sans Terminal)
+# BlueOrb — Native AOT Port & HD / Ultrawide Runtime
 
-**BlueOrb** transforme votre copie `.3ds` décryptée de **Pokémon Saphir Alpha** (*CTR-P-ECLA*, Révision 2) en un **jeu PC/Mac natif recompilé** (**macOS Apple Silicon `ARM64`**, **Windows `x86_64`**, **Linux `x86_64`**), sans émulateur externe et sans aucune commande à taper dans un terminal.
+**BlueOrb** compiles your decrypted Nintendo 3DS `.3ds` copy of **Pokémon Alpha Sapphire** (*CTR-P-ECLA*, Rev 2) into a **native desktop executable** (**macOS Apple Silicon `ARM64`**, **Windows `x86_64`**, **Linux `x86_64`**) with zero external emulator and zero terminal setup required.
 
-> **100 % Légal** : Ce dépôt et les versions publiées dans **Releases** ne contiennent **aucun** fichier ROM, code, icône ou asset de Pokémon / Nintendo / Game Freak. Vous fournissez uniquement votre propre fichier `.3ds` décrypté au premier lancement.
-
----
-
-## Installation Simple (Sans Terminal — Recommandé pour tout le monde)
-
-1. Rendez-vous dans l'onglet **[Releases](../../releases)** de GitHub et téléchargez le fichier correspondant à votre ordinateur :
-   - **Windows** : `BlueOrb-Windows-x64.zip` → Décompressez et double-cliquez sur **`BlueOrb.exe`**
-   - **macOS (M1 / M2 / M3 / M4 / M5)** : `BlueOrb-macOS-AppleSilicon.zip` → Double-cliquez sur **`BlueOrb.app`** *(si macOS bloque la 1re ouverture : Réglages Système → Confidentialité et sécurité → Ouvrir quand même)*
-   - **Linux / Steam Deck** : `BlueOrb-Linux-x86_64.tar.gz` → Extrayez et lancez **`BlueOrb`**
-2. **Au tout premier lancement** :
-   - Cliquez sur **« Choisir mon fichier .3ds… »** (ou glissez votre fichier `.3ds` décrypté directement dans la fenêtre).
-   - BlueOrb recompile automatiquement le jeu en code machine natif avec une barre de progression *(aucun outil à installer : si votre PC n'a pas de compilateur C, un compilateur portable est téléchargé tout seul)*, puis **lance le jeu automatiquement**.
-3. **Toutes les fois suivantes** :
-   - Ouvrez simplement **`BlueOrb`** : le jeu démarre **immédiatement** !
+> **100% Legal Distribution**: This repository and its **Releases** contain **zero** ROM bytes, game code, sprites, music, or copyrighted Nintendo / Pokémon / Game Freak icons. You supply your own legally dumped, decrypted `.3ds` ROM on first launch.
 
 ---
 
-## Nouveautés & Améliorations Incluses
+## Quick Start (Zero Terminal)
 
-- **Qualité Haute Définition (`1440p` par défaut, jusqu'à `4K+`)** : rendu géométrique 3D haute résolution, lissage des textures `4x Smooth-xBR`, filtrage anisotrope `16x` et option **Sans contours noirs (HD)** activée par défaut.
-- **60 Hz / 60 FPS stable sans clignotement** : synchronisation fluide sans artefacts d'interpolation d'atlas UV (et fluidité expérimentale désactivable/activable dans le menu).
-- **Vrai Support Ultra-Wide (`5:3`, `16:9`, `21:9`, `32:9`)** : démarre avec l'affichage classique `5:3` superposé et passe en plein écran large *Hor+* sans étirer les personnages ni l'interface (`F6` ou menu `Échap`).
-- **Deux Fenêtres Détachables (`Dual Screen`)** : détachez l'écran tactile du bas (PokéMulti-Navi, sac, combats) dans sa propre fenêtre indépendante en un clic (`F7` ou menu `Échap`), puis fermez la 2e fenêtre pour regrouper.
-- **Menu en français pensé pour tous (`Échap`)** : réglages clairs sans jargon technique (*Jeu & Sauvegardes*, *Écrans & Ultra-Wide*, *Qualité & Son*, *Touches & Manette*, *Multijoueur & Bonus*), manettes Xbox / PlayStation / Switch Pro reconnues automatiquement.
+1. Download the archive for your OS from **[GitHub Releases](../../releases)**:
+   - **Windows (`x64`)**: `BlueOrb-Windows-x64.zip` — extract and launch **`BlueOrb.exe`**
+   - **macOS (`ARM64` M1–M5)**: `BlueOrb-macOS-AppleSilicon.dmg` (drag **`BlueOrb.app`** to **Applications**) or `BlueOrb-macOS-AppleSilicon.zip` *(BlueOrb also offers to move itself into `/Applications` automatically; on first launch allow it under System Settings → Privacy & Security → Open Anyway)*
+   - **Linux (`x64` / Steam Deck)**: `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**
+2. **First Launch**:
+   - Click **Select ROM…** (or drop your decrypted `.3ds` / `.cci` file onto the launcher window).
+   - BlueOrb statically recompiles the game for your CPU (automatically fetching a portable `zig cc` compiler if needed), updates the app icon to your ROM's official icon once compiled, and launches straight into the game.
+3. **Future Launches**:
+   - Open **`BlueOrb`** to boot directly into your game.
+4. **Cleaning Residual Files**:
+   - Click **Clean Cache** in the launcher bar (or **System & Cheats → Clean Residual Build Files…** inside `Esc`) anytime to remove temporary build artifacts while keeping all save files intact.
 
 ---
 
-## Raccourcis Pratiques en Jeu
+## Key Features
 
-| Touche | Action |
+- **Native HD 3D Rendering**: Internal 3D scaling up to `4K+` (`5x / 1440p` default), `4x Smooth-xBR` texture upscaling, `16x` anisotropic filtering, and optional **No Outlines (HD)** toggle.
+- **Flicker-Free 60 Hz Display**: Safe default presentation with UV sprite-atlas guards in the optional frame interpolator.
+- **Hor+ Ultrawide (`5:3`, `16:9`, `21:9`, `32:9`)**: Starts in native `5:3` stacked layout; press **`F6`** or open `Esc → Display` for true unstretched widescreen/ultrawide.
+- **Detachable Dual Windows**: Press **`F7`** to pop the bottom touch screen into a second independent window (zero-copy shared GPU surface + mouse touch input).
+- **English by Default**: Clean native desktop UI, Xbox / PlayStation / Switch Pro controller auto-mapping, save states (`F5`/`F8`), and custom texture/cheat support.
+
+---
+
+## In-Game Hotkeys
+
+| Key | Action |
 | :--- | :--- |
-| **`Échap`** | Ouvrir / fermer le menu des réglages et sauvegardes rapides |
-| **`F6`** | Changer le format d'écran (`5:3` → `16:9` → `21:9 Ultra-Wide` → `32:9`) |
-| **`F7`** | Détacher ou regrouper les deux écrans sur **2 fenêtres** |
-| **`F9`** | Changer la disposition des écrans |
-| **`F11`** | Activer / quitter le plein écran |
+| **`Esc`** | Toggle Pause / Settings overlay |
+| **`F5` / `F8`** | Quick Save State / Quick Load State |
+| **`F6`** | Cycle Aspect Ratio (`5:3` → `16:9` → `21:9` → `32:9`) |
+| **`F7`** | Detach / Re-attach Dual Screen Window |
+| **`F9`** | Cycle Screen Layout |
+| **`F11`** | Toggle Fullscreen |
 
 ---
 
-## Compiler soi-même depuis le code source (Optionnel — Développeurs)
-
-Si vous souhaitez compiler vous-même depuis le dépôt avec Rust installé :
+## Building from Source (Optional — Developers)
 
 ```bash
-# Générer l'application autonome 100 % légale (Zéro ROM requise) dans dist/BlueOrb* :
+# Build the 100% legal standalone BlueOrb GUI app (no ROM required) in dist/:
 ./blueorb release          # macOS / Linux
 .\blueorb.ps1 release      # Windows PowerShell
 
-# Ou compiler un bundle statique pré-lié avec votre ROM locale :
+# Build a pre-linked app directly from a local ROM:
 ./blueorb app              # macOS / Linux
 .\blueorb.ps1 app          # Windows PowerShell
 ```

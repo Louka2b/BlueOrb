@@ -43,7 +43,7 @@ impl Default for SharedJob {
         Self {
             phase: BuildPhase::Idle,
             progress: 0.0,
-            step_label: "En attente".into(),
+            step_label: "Idle".into(),
             logs: Vec::new(),
         }
     }
@@ -57,12 +57,13 @@ struct InstallerApp {
     hovering_drop: bool,
 
     aspect_idx: usize,  // 0 = 5:3, 1 = 16:9, 2 = 21:9, 3 = 32:9
-    dual_windows: bool, // false par défaut
-    resolution: u32,    // 5 par défaut
-    no_outlines: bool,  // true par défaut
-    lang_idx: usize,    // 0 = Français
+    dual_windows: bool, // false by default
+    resolution: u32,    // 5 by default
+    no_outlines: bool,  // true by default
+    lang_idx: usize,    // 0 = English
     portable: bool,
     show_logs: bool,
+    status_note: Option<String>,
 
     job: Arc<Mutex<SharedJob>>,
 }
@@ -88,6 +89,7 @@ impl InstallerApp {
             lang_idx: 0,
             portable: false,
             show_logs: false,
+            status_note: None,
             job: Arc::new(Mutex::new(SharedJob::default())),
         }
     }
@@ -97,13 +99,38 @@ impl InstallerApp {
         self.rom_path = Some(path);
     }
 
+    fn clean_build_cache(&mut self) {
+        let mut dirs = vec![
+            self.project_root.join("build").join("recomp_sdk").join("3dsrecomp").join("target"),
+            self.project_root.join("build").join("recomp_sdk").join("zakuro").join("target"),
+            self.project_root.join("build").join("native_port").join("target"),
+            self.project_root.join("tools").join("launcher").join("target"),
+            self.project_root.join("asm"),
+            self.project_root.join("baserom"),
+        ];
+        if cfg!(not(target_os = "windows")) {
+            dirs.push(self.project_root.join("tools").join("installer").join("target"));
+        }
+        let mut freed = 0u64;
+        for dir in dirs {
+            if dir.exists() {
+                freed += dir_byte_size(&dir);
+                let _ = fs::remove_dir_all(&dir);
+            }
+        }
+        self.status_note = Some(format!(
+            "Cleaned {:.1} MB of temporary build cache (saves kept intact).",
+            freed as f64 / (1024.0 * 1024.0)
+        ));
+    }
+
     fn start_installation(&mut self, ctx: egui::Context) {
         let Some(rom) = self.rom_path.clone() else {
             return;
         };
         if !rom.is_file() {
             let mut j = self.job.lock().unwrap();
-            j.phase = BuildPhase::Failed(format!("Fichier introuvable : {}", rom.display()));
+            j.phase = BuildPhase::Failed(format!("File not found: {}", rom.display()));
             return;
         }
 
@@ -123,8 +150,8 @@ impl InstallerApp {
             _ => "--32:9",
         };
         let lang_code = match self.lang_idx {
-            0 => "fr",
-            1 => "en",
+            0 => "en",
+            1 => "fr",
             2 => "ja",
             3 => "de",
             4 => "es",
@@ -138,12 +165,13 @@ impl InstallerApp {
         let cli_bin = self.cli_bin.clone();
         let job = self.job.clone();
         self.show_logs = true;
+        self.status_note = None;
 
         {
             let mut j = job.lock().unwrap();
             j.phase = BuildPhase::Running;
             j.progress = 0.05;
-            j.step_label = "Préparation de la recompilation…".into();
+            j.step_label = "Preparing AOT recompilation…".into();
             j.logs.clear();
         }
 
@@ -178,7 +206,7 @@ impl InstallerApp {
                 Ok(c) => c,
                 Err(err) => {
                     let mut j = job.lock().unwrap();
-                    j.phase = BuildPhase::Failed(format!("Impossible de lancer l'outil : {err}"));
+                    j.phase = BuildPhase::Failed(format!("Could not start builder tool: {err}"));
                     ctx.request_repaint();
                     return;
                 }
@@ -231,7 +259,7 @@ impl InstallerApp {
                     let out_bundle = expected_output_bundle(&root);
                     let mut j = job.lock().unwrap();
                     j.progress = 1.0;
-                    j.step_label = "Terminé".into();
+                    j.step_label = "Completed".into();
                     j.phase = BuildPhase::Success(out_bundle);
                 }
                 Ok(status) => {
@@ -240,9 +268,9 @@ impl InstallerApp {
                         .logs
                         .iter()
                         .rev()
-                        .find(|l| l.contains("erreur") || l.contains("error") || l.contains("Échec"))
+                        .find(|l| l.contains("error") || l.contains("erreur") || l.contains("Échec"))
                         .cloned()
-                        .unwrap_or_else(|| format!("Code de sortie {status}"));
+                        .unwrap_or_else(|| format!("Exit status {status}"));
                     j.phase = BuildPhase::Failed(last_err);
                 }
                 Err(e) => {
@@ -280,21 +308,38 @@ impl eframe::App for InstallerApp {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let full_w = ui.available_width();
 
-                    // En-tête sobre
-                    ui.label(
-                        RichText::new("Pokémon Saphir Alpha — Installation Native")
-                            .size(23.0)
-                            .strong()
-                            .color(Color32::WHITE),
-                    );
-                    ui.add_space(2.0);
-                    ui.label(
-                        RichText::new("Recompilation statique AOT vers un exécutable natif autonome (sans émulateur).")
-                            .size(14.0)
-                            .color(Color32::from_rgb(146, 154, 170)),
-                    );
+                    // Clean header bar
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new("BlueOrb — Native AOT Setup")
+                                    .size(21.0)
+                                    .strong()
+                                    .color(Color32::WHITE),
+                            );
+                            ui.add_space(2.0);
+                            ui.label(
+                                RichText::new("Static AOT recompilation into an independent native desktop binary (no external emulator).")
+                                    .size(13.5)
+                                    .color(Color32::from_rgb(146, 154, 170)),
+                            );
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add_enabled(!is_running, egui::Button::new(RichText::new("Clean Cache").size(13.0)))
+                                .clicked()
+                            {
+                                self.clean_build_cache();
+                            }
+                        });
+                    });
 
-                    ui.add_space(20.0);
+                    if let Some(note) = &self.status_note {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(note).size(13.0).color(Color32::from_rgb(134, 239, 172)));
+                    }
+
+                    ui.add_space(18.0);
 
                     // Zone ROM
                     let rom_ok = self.rom_info.as_ref().is_some_and(|r| r.valid_ncch);
@@ -337,7 +382,7 @@ impl eframe::App for InstallerApp {
                                             };
                                             ui.label(
                                                 RichText::new(format!(
-                                                    "{}  ·  {:.0} Mo  ·  {} ({})",
+                                                    "{}  ·  {:.0} MB  ·  {} ({})",
                                                     info.note, info.size_mb, info.product_code, info.title_id_hex
                                                 ))
                                                 .size(13.0)
@@ -346,14 +391,14 @@ impl eframe::App for InstallerApp {
                                         }
                                         _ => {
                                             ui.label(
-                                                RichText::new("Aucune ROM sélectionnée")
+                                                RichText::new("No ROM selected")
                                                     .size(16.0)
                                                     .strong()
                                                     .color(Color32::WHITE),
                                             );
                                             ui.add_space(3.0);
                                             ui.label(
-                                                RichText::new("Glissez votre fichier .3ds décrypté dans cette fenêtre ou cliquez sur Parcourir.")
+                                                RichText::new("Drop a decrypted .3ds / .cci file into this window or click Browse.")
                                                     .size(13.5)
                                                     .color(Color32::from_rgb(146, 154, 170)),
                                             );
@@ -364,12 +409,12 @@ impl eframe::App for InstallerApp {
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     ui.add_enabled_ui(!is_running, |ui| {
                                         if ui
-                                            .add_sized([165.0, 40.0], egui::Button::new(RichText::new("Parcourir…").size(14.5)))
+                                            .add_sized([165.0, 40.0], egui::Button::new(RichText::new("Browse…").size(14.5)))
                                             .clicked()
                                         {
                                             if let Some(picked) = rfd::FileDialog::new()
-                                                .set_title("Sélectionner la ROM Pokémon Saphir Alpha (.3ds)")
-                                                .add_filter("ROM Nintendo 3DS", &["3ds", "cci", "cxi"])
+                                                .set_title("Select Decrypted Nintendo 3DS ROM (.3ds)")
+                                                .add_filter("Nintendo 3DS ROM", &["3ds", "cci", "cxi"])
                                                 .pick_file()
                                             {
                                                 self.set_rom(picked);
@@ -382,7 +427,7 @@ impl eframe::App for InstallerApp {
 
                     ui.add_space(16.0);
 
-                    // Options initiales
+                    // Initial Options
                     egui::Frame::NONE
                         .fill(Color32::from_rgb(25, 28, 36))
                         .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 18)))
@@ -393,20 +438,20 @@ impl eframe::App for InstallerApp {
                             ui.set_width(cw);
 
                             ui.add_enabled_ui(!is_running, |ui| {
-                                ui.label(RichText::new("Format d'affichage par défaut").size(15.0).strong().color(Color32::WHITE));
+                                ui.label(RichText::new("Default Display Aspect Ratio").size(15.0).strong().color(Color32::WHITE));
                                 ui.add_space(6.0);
                                 let aspects = [
-                                    (0usize, "5:3 Original"),
-                                    (1, "16:9 Large"),
-                                    (2, "21:9 Ultra-Wide"),
-                                    (3, "32:9 Super Large"),
+                                    (0usize, "5:3 Native"),
+                                    (1, "16:9 Widescreen"),
+                                    (2, "21:9 Ultrawide"),
+                                    (3, "32:9 Super Wide"),
                                 ];
                                 if let Some(a) = segmented_row(ui, cw, 40.0, self.aspect_idx, &aspects, "inst_aspect") {
                                     self.aspect_idx = a;
                                 }
 
                                 ui.add_space(14.0);
-                                ui.label(RichText::new("Résolution interne 3D").size(15.0).strong().color(Color32::WHITE));
+                                ui.label(RichText::new("Internal 3D Resolution").size(15.0).strong().color(Color32::WHITE));
                                 ui.add_space(6.0);
                                 let res_opts = [(3u32, "3x (720p)"), (5, "5x (1440p)"), (8, "8x (4K)")];
                                 if let Some(r) = segmented_row(ui, cw, 40.0, self.resolution, &res_opts, "inst_res") {
@@ -414,11 +459,11 @@ impl eframe::App for InstallerApp {
                                 }
 
                                 ui.add_space(14.0);
-                                ui.label(RichText::new("Langue du jeu").size(15.0).strong().color(Color32::WHITE));
+                                ui.label(RichText::new("System Language").size(15.0).strong().color(Color32::WHITE));
                                 ui.add_space(6.0);
                                 let langs = [
-                                    (0usize, "Français"),
-                                    (1, "English"),
+                                    (0usize, "English"),
+                                    (1, "Français"),
                                     (2, "日本語"),
                                     (3, "Deutsch"),
                                     (4, "Español"),
@@ -434,8 +479,8 @@ impl eframe::App for InstallerApp {
                                 toggle_row(
                                     ui,
                                     cw,
-                                    "Supprimer les contours noirs (HD)",
-                                    "Retire l'effet trait noir 3DS autour des modèles 3D (modifiable en jeu avec Échap).",
+                                    "Remove black outlines (HD)",
+                                    "Disables 3DS dark toon outlines around 3D models (toggle anytime in Esc menu).",
                                     &mut self.no_outlines,
                                 );
 
@@ -443,8 +488,8 @@ impl eframe::App for InstallerApp {
                                 toggle_row(
                                     ui,
                                     cw,
-                                    "Séparer les deux écrans dès le démarrage",
-                                    "Ouvre l'écran tactile sur une deuxième fenêtre (modifiable à tout moment avec F7 ou Échap).",
+                                    "Start in Dual Window mode",
+                                    "Opens the touch screen in a detached second window (toggle anytime with F7).",
                                     &mut self.dual_windows,
                                 );
 
@@ -452,8 +497,8 @@ impl eframe::App for InstallerApp {
                                 toggle_row(
                                     ui,
                                     cw,
-                                    "Copie complète portable",
-                                    "Copie les fichiers de données directement dans dist/ pour pouvoir déplacer le jeu.",
+                                    "Portable full copy",
+                                    "Copies ROM data files directly into dist/ instead of hardlinking.",
                                     &mut self.portable,
                                 );
                             });
@@ -464,7 +509,7 @@ impl eframe::App for InstallerApp {
                     let can_install = rom_ok && !is_running;
                     match &phase {
                         BuildPhase::Idle | BuildPhase::Failed(_) => {
-                            if primary_cta(ui, full_w, 48.0, "Compiler et installer l'application native", can_install) {
+                            if primary_cta(ui, full_w, 48.0, "Compile and build native application", can_install) {
                                 self.start_installation(ctx.clone());
                             }
                             if let BuildPhase::Failed(err) = &phase {
@@ -506,7 +551,7 @@ impl eframe::App for InstallerApp {
                                     let cw = (full_w - 38.0).max(200.0);
                                     ui.set_width(cw);
                                     ui.label(
-                                        RichText::new("Application prête")
+                                        RichText::new("Application ready")
                                             .size(16.5)
                                             .strong()
                                             .color(Color32::from_rgb(134, 239, 172)),
@@ -517,21 +562,33 @@ impl eframe::App for InstallerApp {
                                             .color(Color32::from_rgb(180, 195, 186)),
                                     );
                                     ui.add_space(12.0);
-                                    let w1 = cw * 0.48;
-                                    let w2 = (cw - w1 - 20.0) / 2.0;
+                                    let is_macos_bundle = cfg!(target_os = "macos")
+                                        && bundle_path.extension().and_then(|e| e.to_str()) == Some("app");
+                                    let w1 = cw * if is_macos_bundle { 0.34 } else { 0.48 };
+                                    let rem_cols = if is_macos_bundle { 3.0 } else { 2.0 };
+                                    let w2 = (cw - w1 - 10.0 * rem_cols) / rem_cols;
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 10.0;
-                                        if primary_cta(ui, w1, 42.0, "Lancer le jeu", true) {
+                                        if primary_cta(ui, w1, 42.0, "Launch Game", true) {
                                             launch_built_game(bundle_path);
                                         }
+                                        if is_macos_bundle
+                                            && ui
+                                                .add_sized([w2, 42.0], egui::Button::new("Install to /Applications"))
+                                                .clicked()
+                                        {
+                                            if let Some(note) = install_macos_bundle_to_applications(bundle_path) {
+                                                self.status_note = Some(note);
+                                            }
+                                        }
                                         if ui
-                                            .add_sized([w2, 42.0], egui::Button::new("Ouvrir le dossier"))
+                                            .add_sized([w2, 42.0], egui::Button::new("Open Folder"))
                                             .clicked()
                                         {
                                             reveal_folder(bundle_path.parent().unwrap_or(bundle_path));
                                         }
                                         if ui
-                                            .add_sized([w2, 42.0], egui::Button::new("Recompiler"))
+                                            .add_sized([w2, 42.0], egui::Button::new("Rebuild"))
                                             .clicked()
                                         {
                                             self.start_installation(ctx.clone());
@@ -544,9 +601,9 @@ impl eframe::App for InstallerApp {
                     if !logs_snapshot.is_empty() {
                         ui.add_space(12.0);
                         let lbl = if self.show_logs {
-                            "Masquer le journal de compilation"
+                            "Hide build log"
                         } else {
-                            "Afficher le journal de compilation"
+                            "Show build log"
                         };
                         if ui.button(RichText::new(lbl).size(13.0)).clicked() {
                             self.show_logs = !self.show_logs;
@@ -817,11 +874,11 @@ fn inspect_3ds_rom(path: &Path) -> RomSummary {
     let is_as = tid == 0x0004_0000_0011_C500 || product_code.contains("ECLA");
 
     let note = if encrypted {
-        "ROM chiffrée (fournissez une ROM décryptée)"
+        "Encrypted ROM (provide a decrypted dump)"
     } else if is_as {
-        "ROM Pokémon Saphir Alpha vérifiée"
+        "Verified Pokémon Alpha Sapphire ROM"
     } else {
-        "ROM 3DS décryptée"
+        "Decrypted Nintendo 3DS ROM"
     };
 
     RomSummary {
@@ -960,20 +1017,112 @@ fn prepend_standard_paths(cmd: &mut Command) {
 fn update_progress_from_line(job: &mut SharedJob, line: &str) {
     if line.contains("[1/5]") {
         job.progress = 0.12;
-        job.step_label = "Étape 1/5 — Lecture des métadonnées et de l'icône".into();
+        job.step_label = "Step 1/5 — Reading metadata & game icon".into();
     } else if line.contains("[2/5]") {
         job.progress = 0.25;
-        job.step_label = "Étape 2/5 — Préparation du recompilateur AOT".into();
+        job.step_label = "Step 2/5 — Preparing AOT static recompiler".into();
     } else if line.contains("[3/5]") {
         job.progress = 0.48;
-        job.step_label = "Étape 3/5 — Traduction AOT des 75 219 fonctions en C natif".into();
+        job.step_label = "Step 3/5 — Translating 75,219 functions to native code".into();
     } else if line.contains("[4/5]") {
         job.progress = 0.80;
-        job.step_label = "Étape 4/5 — Édition de liens de l'exécutable natif".into();
+        job.step_label = "Step 4/5 — Linking native standalone executable".into();
     } else if line.contains("[5/5]") {
         job.progress = 0.94;
-        job.step_label = "Étape 5/5 — Création de l'application dans dist/".into();
+        job.step_label = "Step 5/5 — Packaging bundle in dist/".into();
     }
+}
+
+fn dir_byte_size(path: &Path) -> u64 {
+    let Ok(meta) = fs::symlink_metadata(path) else { return 0 };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    fs::read_dir(path)
+        .map(|entries| entries.flatten().map(|e| dir_byte_size(&e.path())).sum())
+        .unwrap_or(0)
+}
+
+fn install_macos_bundle_to_applications(bundle_path: &Path) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let name = bundle_path.file_name()?;
+        let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let copy_to = |dir: &Path| -> Option<PathBuf> {
+            let dest = dir.join(name);
+            if dest.exists() && fs::remove_dir_all(&dest).is_err() {
+                return None;
+            }
+            let ok = Command::new("/usr/bin/ditto")
+                .arg(bundle_path)
+                .arg(&dest)
+                .status()
+                .is_ok_and(|s| s.success());
+            ok.then_some(dest)
+        };
+        let dest = copy_to(Path::new("/Applications")).or_else(|| {
+            let user_apps = home.join("Applications");
+            let _ = fs::create_dir_all(&user_apps);
+            copy_to(&user_apps)
+        });
+        return match dest {
+            Some(p) => Some(format!("Installed to {}", p.display())),
+            None => Some("Could not copy bundle to /Applications.".into()),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = bundle_path;
+        None
+    }
+}
+
+fn render_diveball_window_icon() -> egui::IconData {
+    let size = 64usize;
+    let szf = size as f32;
+    let mut rgba = vec![0u8; size * size * 4];
+    for y in 0..size {
+        let uy = ((y as f32 + 0.5) / szf) * 2.0 - 1.0;
+        for x in 0..size {
+            let ux = ((x as f32 + 0.5) / szf) * 2.0 - 1.0;
+            let d = (ux * ux + uy * uy).sqrt();
+            if d > 0.90 {
+                continue;
+            }
+            let aa = ((0.90 - d) * szf * 0.5).clamp(0.0, 1.0);
+            let nx = ux / 0.90;
+            let ny = -uy / 0.90;
+            let nz = (1.0 - (nx * nx + ny * ny).min(1.0)).sqrt();
+            let py = ny * 0.98 - nz * (-0.19);
+            let pz = ny * (-0.19) + nz * 0.98;
+            let clasp = pz.clamp(-1.0, 1.0).acos();
+            let shade = (0.4 + 0.6 * (nx * -0.4 + ny * 0.56 + nz * 0.72).max(0.0)).clamp(0.0, 1.0);
+            let (r, g, b) = if clasp < 0.12 {
+                (56.0, 189.0, 255.0)
+            } else if clasp < 0.22 {
+                (240.0 * shade, 244.0 * shade, 250.0 * shade)
+            } else if clasp < 0.29 || py.abs() < 0.07 {
+                (24.0, 28.0, 38.0)
+            } else if py > 0.0 {
+                let wave = 0.23 + 0.08 * (nx * 5.0).cos();
+                if (py - wave).abs() < 0.05 {
+                    (210.0, 242.0, 255.0)
+                } else if py > 0.55 {
+                    (66.0 * shade + 20.0, 170.0 * shade + 30.0, 248.0)
+                } else {
+                    (18.0 * shade + 8.0, 90.0 * shade + 24.0, 214.0 * shade + 40.0)
+                }
+            } else {
+                (238.0 * shade, 242.0 * shade, 248.0 * shade)
+            };
+            let idx = (y * size + x) * 4;
+            rgba[idx] = r.clamp(0.0, 255.0) as u8;
+            rgba[idx + 1] = g.clamp(0.0, 255.0) as u8;
+            rgba[idx + 2] = b.clamp(0.0, 255.0) as u8;
+            rgba[idx + 3] = (aa * 255.0) as u8;
+        }
+    }
+    egui::IconData { rgba, width: size as u32, height: size as u32 }
 }
 
 fn expected_output_bundle(root: &Path) -> PathBuf {
@@ -1018,7 +1167,8 @@ fn reveal_folder(folder: &Path) {
 
 fn main() -> eframe::Result<()> {
     let viewport = egui::ViewportBuilder::default()
-        .with_title("BlueOrb — Installation de Pokémon Saphir Alpha")
+        .with_title("BlueOrb — Native AOT Setup")
+        .with_icon(Arc::new(render_diveball_window_icon()))
         .with_inner_size([820.0, 620.0])
         .with_min_inner_size([640.0, 500.0])
         .with_drag_and_drop(true);

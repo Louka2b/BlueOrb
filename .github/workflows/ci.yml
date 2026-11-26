@@ -116,11 +116,14 @@ jobs:
       - name: Package Archive & Smoke-Test Binary (macOS ARM64)
         if: runner.os == 'macOS'
         run: |
-          mkdir -p release-assets
+          mkdir -p release-assets dmg-stage
           xattr -cr "dist/BlueOrb.app"
           codesign --verify --deep "dist/BlueOrb.app"
           "dist/BlueOrb.app/Contents/MacOS/BlueOrb" --test-pattern --headless 1 --mute
           ditto -c -k --keepParent "dist/BlueOrb.app" "release-assets/${{ matrix.archive }}"
+          cp -R "dist/BlueOrb.app" "dmg-stage/"
+          ln -s /Applications "dmg-stage/Applications"
+          hdiutil create -volname "BlueOrb" -srcfolder "dmg-stage" -ov -format UDZO "release-assets/BlueOrb-macOS-AppleSilicon.dmg"
 
       - name: Package Archive (Linux x86_64)
         if: runner.os == 'Linux'
@@ -133,7 +136,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path ".\dist\BlueOrb\BlueOrb.exe")) {
-            Write-Error "dist\BlueOrb\BlueOrb.exe introuvable !"
+            Write-Error "dist\BlueOrb\BlueOrb.exe not found!"
             exit 1
           }
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
@@ -145,7 +148,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          path: release-assets/${{ matrix.archive }}
+          path: |
+            release-assets/${{ matrix.archive }}
+            release-assets/BlueOrb-macOS-*
 
   auto-release:
     name: Publish Legal GUI Release
@@ -166,10 +171,10 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "title=BlueOrb ${GITHUB_REF_NAME} — Application Graphique (Windows, macOS, Linux)" >> "$GITHUB_OUTPUT"
+            echo "title=BlueOrb ${GITHUB_REF_NAME} — Native Standalone Launcher (Windows, macOS, Linux)" >> "$GITHUB_OUTPUT"
           else
             echo "tag=latest" >> "$GITHUB_OUTPUT"
-            echo "title=BlueOrb — Téléchargement Direct (Windows, macOS Apple Silicon, Linux)" >> "$GITHUB_OUTPUT"
+            echo "title=BlueOrb — Native Standalone Launcher (Windows, macOS Apple Silicon, Linux)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publish / Update GitHub Release
@@ -181,22 +186,23 @@ jobs:
           prerelease: false
           files: release-files/*
           body: |
-            ## BlueOrb — Recompilateur & Moteur Natif HD / Ultra-Wide (Sans Terminal)
+            ## BlueOrb — Native AOT Recompiler & HD / Ultrawide Runtime (Zero Terminal)
 
-            Téléchargez simplement la version correspondant à votre système :
-            - **Windows (64 bits)** : `BlueOrb-Windows-x64.zip` → Décompressez et lancez **`BlueOrb.exe`**
-            - **macOS (Apple Silicon M1/M2/M3/M4/M5)** : `BlueOrb-macOS-AppleSilicon.zip` → Ouvrez **`BlueOrb.app`** *(au tout premier lancement sur Mac : Réglages Système → Confidentialité et sécurité → Ouvrir quand même)*
-            - **Linux (x86_64 / Steam Deck)** : `BlueOrb-Linux-x86_64.tar.gz` → Extrayez et lancez **`./BlueOrb`**
+            Download the build for your system:
+            - **Windows (x64)** : `BlueOrb-Windows-x64.zip` — extract and run **`BlueOrb.exe`**
+            - **macOS (Apple Silicon M1–M5)** : `BlueOrb-macOS-AppleSilicon.dmg` (drag **`BlueOrb.app`** to **Applications**) or `BlueOrb-macOS-AppleSilicon.zip` *(if opened outside `/Applications`, BlueOrb also offers to move itself there automatically; on first launch allow it in System Settings -> Privacy & Security -> Open Anyway)*
+            - **Linux (x64 / Steam Deck)** : `BlueOrb-Linux-x86_64.tar.gz` — extract and run **`./BlueOrb`**
 
-            ### Comment ça marche ?
-            1. **Premier lancement** : une fenêtre d'accueil vous demande simplement de sélectionner (ou glisser-déposer) votre propre fichier **`.3ds` décrypté**.
-            2. **Recompilation automatique** : l'application recompile le jeu en code machine natif pour votre ordinateur (aucun terminal, ni Rust, ni Git requis ; si aucun compilateur C n'est présent, un compilateur portable est téléchargé automatiquement), puis **lance le jeu dès la fin**.
-            3. **Lancements suivants** : double-cliquez sur **`BlueOrb`**, le jeu démarre **immédiatement** !
+            ### How It Works
+            1. **First launch**: drop or select your own **decrypted `.3ds` ROM** in the launcher window.
+            2. **Automatic native build**: BlueOrb recompiles the game into native machine code for your CPU (downloads a portable `zig cc` compiler automatically if none is installed), upgrades the app/window icon to your ROM's official game icon once built, and auto-launches the game.
+            3. **Every launch after**: opening **`BlueOrb`** boots straight into your game.
+            4. **Clean Cache**: use **`Clean Cache`** in the launcher bar (or **System & Cheats -> Clean Residual Build Files…** inside `Esc`) anytime to remove temporary build caches while preserving saves.
 
-            ### Raccourcis utiles en jeu
-            - **`Échap`** : Ouvrir le menu (Qualité HD/4K, Écrans, Ultra-Wide, Manette, Sauvegardes)
-            - **`F6`** : Changer de format (`5:3` → `16:9` → `21:9 Ultra-Wide` → `32:9`)
-            - **`F7`** : Détacher / regrouper l'écran tactile sur une **deuxième fenêtre**
-            - **`F11`** : Plein écran
+            ### Hotkeys
+            - **`Esc`** : Open settings & save states overlay
+            - **`F6`** : Cycle top screen aspect ratio (`5:3` -> `16:9` -> `21:9 Ultrawide` -> `32:9`)
+            - **`F7`** : Toggle detached dual-window touch screen
+            - **`F11`** : Fullscreen
 
-            > **Mentions légales** : Cet exécutable ne contient **aucun** code, graphique, icône, musique ni donnée de jeu sous licence Nintendo / The Pokémon Company / Game Freak. Vous devez fournir votre propre copie `.3ds` décryptée obtenue légalement depuis votre cartouche Nintendo 3DS.
+            > **Legal Notice**: BlueOrb contains **zero** copyrighted Pokémon / Nintendo / Game Freak code, ROM bytes, icons, or assets. You must provide your own legally dumped, decrypted Nintendo 3DS `.3ds` ROM.

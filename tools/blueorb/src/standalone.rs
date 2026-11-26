@@ -90,7 +90,7 @@ impl StandaloneOptions {
             portable_copy: false,
             force_recomp: false,
             windowed: false,
-            language: 2,
+            language: 1,
             top_aspect: "console".into(),
             dual_windows: false,
             explicit_display_flags: false,
@@ -144,6 +144,11 @@ pub fn build_standalone_app(
     ensure_git_repo(RECOMP3DS_GIT, &recomp_repo, "3dsrecomp")?;
     ensure_git_repo(ZAKURO_GIT, &zakuro_repo, "zakuro")?;
     crate::enhancer::apply_sdk_enhancements(&recomp_repo, &zakuro_repo)?;
+    let _ = generate_clean_orb_icons(
+        None,
+        Some(&zakuro_repo.join("crates").join("zakuro").join("AppIcon.ico")),
+        None,
+    );
 
     let cargo_bin = find_program("cargo", &candidate_search_dirs())
         .unwrap_or_else(|| PathBuf::from("cargo"));
@@ -809,6 +814,11 @@ pub fn build_clean_legal_app(project_root: &Path, launch: bool) -> Result<PathBu
     ensure_git_repo(RECOMP3DS_GIT, &recomp_repo, "3dsrecomp")?;
     ensure_git_repo(ZAKURO_GIT, &zakuro_repo, "zakuro")?;
     crate::enhancer::apply_sdk_enhancements(&recomp_repo, &zakuro_repo)?;
+    let _ = generate_clean_orb_icons(
+        None,
+        Some(&zakuro_repo.join("crates").join("zakuro").join("AppIcon.ico")),
+        None,
+    );
 
     let cargo_bin = find_program("cargo", &candidate_search_dirs())
         .unwrap_or_else(|| PathBuf::from("cargo"));
