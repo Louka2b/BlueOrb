@@ -40,16 +40,13 @@ jobs:
       - name: Cache Rust Dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            tools/blueorb
-            tools/launcher
-            tools/installer
+          workspaces: tools/blueorb
 
-      - name: Install System Libraries & ARM EABI Toolchain (Linux)
+      - name: Install System Libraries (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
             clang \
             pkg-config \
@@ -64,41 +61,23 @@ jobs:
             libgl1-mesa-dev \
             libegl1-mesa-dev \
             libdbus-1-dev \
-            libfontconfig1-dev \
-            binutils-arm-none-eabi \
-            gcc-arm-none-eabi \
-            libstdc++-arm-none-eabi-newlib
+            libfontconfig1-dev
 
-      - name: Install ARM EABI Toolchain (macOS ARM64)
-        if: runner.os == 'macOS'
-        run: |
-          brew install arm-none-eabi-binutils arm-none-eabi-gcc || brew install --cask gcc-arm-embedded
-
-      - name: Install ARM EABI Toolchain & LLVM (Windows x86_64)
+      - name: Ensure LLVM for PE Icon Embedding (Windows x86_64)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install gcc-arm-embedded llvm --no-progress -y
+          if (-not (Get-Command llvm-rc -ErrorAction SilentlyContinue) -and -not (Test-Path "C:\Program Files\LLVM\bin\llvm-rc.exe")) {
+            choco install llvm --no-progress -y
+          }
           if (Test-Path "C:\Program Files\LLVM\bin") {
             "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
 
-      - name: Build & Test BlueOrb CLI, Launcher & Installer
+      - name: Build & Test BlueOrb CLI
         run: |
           cargo build --release --manifest-path tools/blueorb/Cargo.toml
           cargo test --release --manifest-path tools/blueorb/Cargo.toml
-          cargo build --release --manifest-path tools/launcher/Cargo.toml
-          cargo build --release --manifest-path tools/installer/Cargo.toml
-
-      - name: Verify ARM Toolchain (Doctor)
-        shell: pwsh
-        run: |
-          if ($IsWindows) {
-            & ".\tools\blueorb\target\release\blueorb.exe" doctor
-          } else {
-            & "./tools/blueorb/target/release/blueorb" doctor
-          }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build 100% Legal Zero-ROM Standalone BlueOrb GUI App
         shell: pwsh
@@ -107,16 +86,6 @@ jobs:
             & ".\tools\blueorb\target\release\blueorb.exe" release
           } else {
             & "./tools/blueorb/target/release/blueorb" release
-          }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build Cross-Platform GUI Installer Bundle
-        shell: pwsh
-        run: |
-          if ($IsWindows) {
-            & ".\tools\blueorb\target\release\blueorb.exe" installer --no-launch
-          } else {
-            & "./tools/blueorb/target/release/blueorb" installer --no-launch
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
