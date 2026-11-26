@@ -9,6 +9,7 @@ use std::fs;
 use std::path::Path;
 
 const LAUNCHER_BG_JPG: &[u8] = include_bytes!("launcher_bg.jpg");
+const ZAKURO_COOP_RS: &str = include_str!("zakuro_coop.rs");
 
 fn read_lf(path: &Path) -> Result<String, String> {
     fs::read_to_string(path)
@@ -19,9 +20,167 @@ fn read_lf(path: &Path) -> Result<String, String> {
 pub fn apply_sdk_enhancements(recomp_repo: &Path, zakuro_repo: &Path) -> Result<(), String> {
     patch_recomp_incremental(recomp_repo)?;
     patch_zakuro_oras_enhancements(zakuro_repo)?;
+    patch_zakuro_core_coop_room(zakuro_repo)?;
     patch_zakuro_gpu_ultrawide_upscaler_antiflicker_and_dual_vulkan(zakuro_repo)?;
     patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo)?;
     Ok(())
+}
+
+/// Extends `zakuro-core/src/room.rs` with live overworld `PlayerPresence` synchronization alongside local wireless UDS packets.
+fn patch_zakuro_core_coop_room(zakuro_repo: &Path) -> Result<(), String> {
+    let room_rs = zakuro_repo.join("crates").join("zakuro-core").join("src").join("room.rs");
+    if !room_rs.exists() {
+        return Ok(());
+    }
+    let mut src = read_lf(&room_rs).map_err(|e| e.to_string())?;
+    if src.contains("BLUEORB_COOP_ROOM_V3") {
+        return Ok(());
+    }
+
+    if !src.contains("BLUEORB_COOP_ROOM_V1") {
+        src = src.replace(
+            "use std::collections::VecDeque;",
+            "// BLUEORB_COOP_ROOM_V1\nuse std::collections::{HashMap, VecDeque};",
+        );
+        src = src.replace(
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\npub struct Member {",
+            "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct PlayerPresence {\n    pub zone_id: u16,\n    pub x: f32,\n    pub y: f32,\n    pub z: f32,\n    pub yaw: f32,\n    pub speed: f32,\n    pub avatar_style: u8,\n    pub in_battle: bool,\n}\n\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct RemotePlayer {\n    pub mac: Mac,\n    pub nickname: String,\n    pub presence: PlayerPresence,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\npub struct Member {",
+        );
+        src = src.replace(
+            "    Packet { to: Mac, body: Vec<u8> },\n}",
+            "    Packet { to: Mac, body: Vec<u8> },\n    Presence(PlayerPresence),\n}",
+        );
+        src = src.replace(
+            "    Packet { from: Mac, body: Vec<u8> },\n}",
+            "    Packet { from: Mac, body: Vec<u8> },\n    PresenceUpdate(RemotePlayer),\n    PresenceLeft(Mac),\n}",
+        );
+        src = src.replace(
+            "    /// last part of the next MAC handed out\n    next: u32,\n}",
+            "    /// last part of the next MAC handed out\n    next: u32,\n    presences: HashMap<Mac, PlayerPresence>,\n}",
+        );
+        src = src.replace(
+            "            taken: Vec::new(),\n            next: 1,",
+            "            taken: Vec::new(),\n            next: 1,\n            presences: HashMap::new(),",
+        );
+        src = src.replace(
+            "        room.taken.push((Member { nickname: nickname.clone(), mac, game: String::new() }, writer));\n        room.announce();\n        mac",
+            "        let existing_presences: Vec<FromRoom> = room\n            .taken\n            .iter()\n            .filter_map(|(m, _)| {\n                room.presences.get(&m.mac).map(|p| FromRoom::PresenceUpdate(RemotePlayer {\n                    mac: m.mac,\n                    nickname: m.nickname.clone(),\n                    presence: p.clone(),\n                }))\n            })\n            .collect();\n        for pmsg in existing_presences {\n            let _ = write(&mut stream, &pmsg);\n        }\n        room.taken.push((Member { nickname: nickname.clone(), mac, game: String::new() }, writer));\n        room.announce();\n        mac",
+        );
+        src = src.replace(
+            "            ToRoom::Hello { .. } => {}\n        }",
+            "            ToRoom::Presence(presence) => {\n                room.presences.insert(mac, presence.clone());\n                let sender_nick = room\n                    .taken\n                    .iter()\n                    .find(|(m, _)| m.mac == mac)\n                    .map(|(m, _)| m.nickname.clone())\n                    .unwrap_or_default();\n                let update = FromRoom::PresenceUpdate(RemotePlayer {\n                    mac,\n                    nickname: sender_nick,\n                    presence,\n                });\n                for (member, stream) in &room.taken {\n                    if member.mac != mac {\n                        if let Ok(mut stream) = stream.lock() {\n                            let _ = write(&mut *stream, &update);\n                        }\n                    }\n                }\n            }\n            ToRoom::Hello { .. } => {}\n        }",
+        );
+        src = src.replace(
+            "    if let Ok(mut room) = seats.lock() {\n        room.taken.retain(|(member, _)| member.mac != mac);\n        room.announce();\n    }",
+            "    if let Ok(mut room) = seats.lock() {\n        room.taken.retain(|(member, _)| member.mac != mac);\n        room.presences.remove(&mac);\n        let left_msg = FromRoom::PresenceLeft(mac);\n        for (_, stream) in &room.taken {\n            if let Ok(mut stream) = stream.lock() {\n                let _ = write(&mut *stream, &left_msg);\n            }\n        }\n        room.announce();\n    }",
+        );
+        src = src.replace(
+            "    inbox: Mutex<VecDeque<(Mac, Vec<u8>)>>,\n}",
+            "    inbox: Mutex<VecDeque<(Mac, Vec<u8>)>>,\n    presences: Mutex<HashMap<Mac, (RemotePlayer, std::time::Instant)>>,\n}",
+        );
+        src = src.replace(
+            "            inbox: Mutex::new(VecDeque::new()),\n        });",
+            "            inbox: Mutex::new(VecDeque::new()),\n            presences: Mutex::new(HashMap::new()),\n        });",
+        );
+        src = src.replace(
+            "                inbox: Mutex::new(VecDeque::new()),\n            })",
+            "                inbox: Mutex::new(VecDeque::new()),\n                presences: Mutex::new(HashMap::new()),\n            })",
+        );
+        src = src.replace(
+            "                        FromRoom::Welcome { .. } | FromRoom::Refused(_) => {}",
+            "                        FromRoom::PresenceUpdate(rp) => {\n                            if let Ok(mut map) = receiving.presences.lock() {\n                                map.insert(rp.mac, (rp, std::time::Instant::now()));\n                            }\n                        }\n                        FromRoom::PresenceLeft(mac) => {\n                            if let Ok(mut map) = receiving.presences.lock() {\n                                map.remove(&mac);\n                            }\n                        }\n                        FromRoom::Welcome { .. } | FromRoom::Refused(_) => {}",
+        );
+        src = src.replace(
+            "    /// the console's way into the room, leaves what came b4 it",
+            "    pub fn send_presence(&self, presence: PlayerPresence) {\n        let _ = self.outbox.send(ToRoom::Presence(presence));\n    }\n\n    pub fn remote_players(&self) -> Vec<RemotePlayer> {\n        let Ok(mut map) = self.shared.presences.lock() else {\n            return Vec::new();\n        };\n        map.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(6));\n        map.values().map(|(rp, _)| rp.clone()).collect()\n    }\n\n    /// the console's way into the room, leaves what came b4 it",
+        );
+        src = src.replace(
+            "        assert_eq!(server.members().len(), 1);\n    }\n}",
+            "        assert_eq!(server.members().len(), 1);\n    }\n\n    #[test]\n    fn a_room_syncs_overworld_presences() {\n        let server = Server::start(0, \"coop\", \"\", 4).unwrap();\n        let address = format!(\"127.0.0.1:{}\", server.port());\n        let alice = Connection::join(&address, \"Alice\", \"\").unwrap();\n        let bob = Connection::join(&address, \"Bob\", \"\").unwrap();\n\n        alice.send_presence(PlayerPresence {\n            zone_id: 102,\n            x: 150.0,\n            y: 0.0,\n            z: -240.0,\n            yaw: 1.5,\n            speed: 1.0,\n            avatar_style: 3,\n            in_battle: false,\n        });\n        let mut seen = Vec::new();\n        for _ in 0..200 {\n            seen = bob.remote_players();\n            if !seen.is_empty() {\n                break;\n            }\n            std::thread::sleep(Duration::from_millis(5));\n        }\n        assert_eq!(seen.len(), 1);\n        assert_eq!(seen[0].nickname, \"Alice\");\n        assert_eq!(seen[0].presence.zone_id, 102);\n        assert!(alice.remote_players().is_empty());\n    }\n}",
+        );
+    }
+
+    // Upgrade V1 -> V2: Party Leader (Chef), Zone Warp TP, Battle Sync, Real Party Summary
+    if !src.contains("BLUEORB_COOP_ROOM_V2") {
+        src = src.replace(
+            "// BLUEORB_COOP_ROOM_V1",
+            "// BLUEORB_COOP_ROOM_V1\n// BLUEORB_COOP_ROOM_V2",
+        );
+        src = src.replace(
+            "#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\npub struct Member {",
+            "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct PartyMonSummary {\n    pub level: u8,\n    pub hp: u16,\n    pub max_hp: u16,\n}\n\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub enum CoopEvent {\n    ZoneWarp { zone_id: u16, x: f32, y: f32, z: f32, yaw: f32 },\n    BattleStart { zone_id: u16, is_trainer: bool },\n    BattleEnd,\n    PartySync { party_count: u8, mons: Vec<PartyMonSummary> },\n}\n\n#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\npub struct Member {",
+        );
+        src = src.replace(
+            "    Presence(PlayerPresence),\n}",
+            "    Presence(PlayerPresence),\n    SetLeader(Mac),\n    Coop(CoopEvent),\n}",
+        );
+        src = src.replace(
+            "    PresenceLeft(Mac),\n}",
+            "    PresenceLeft(Mac),\n    Leader(Option<Mac>),\n    Coop { from: Mac, event: CoopEvent },\n}",
+        );
+        src = src.replace(
+            "    presences: HashMap<Mac, PlayerPresence>,\n}",
+            "    presences: HashMap<Mac, PlayerPresence>,\n    leader: Option<Mac>,\n}",
+        );
+        src = src.replace(
+            "            presences: HashMap::new(),",
+            "            presences: HashMap::new(),\n            leader: None,",
+        );
+        src = src.replace(
+            "        room.taken.push((Member { nickname: nickname.clone(), mac, game: String::new() }, writer));\n        room.announce();",
+            "        let leader_changed = if room.leader.is_none() {\n            room.leader = Some(mac);\n            true\n        } else {\n            false\n        };\n        let _ = write(&mut stream, &FromRoom::Leader(room.leader));\n        room.taken.push((Member { nickname: nickname.clone(), mac, game: String::new() }, writer));\n        if leader_changed {\n            let lmsg = FromRoom::Leader(room.leader);\n            for (_, s) in &room.taken {\n                if let Ok(mut s) = s.lock() {\n                    let _ = write(&mut *s, &lmsg);\n                }\n            }\n        }\n        room.announce();",
+        );
+        src = src.replace(
+            "            ToRoom::Hello { .. } => {}\n        }",
+            "            ToRoom::SetLeader(target) => {\n                if room.leader == Some(mac) && room.taken.iter().any(|(m, _)| m.mac == target) {\n                    room.leader = Some(target);\n                    let lmsg = FromRoom::Leader(room.leader);\n                    for (_, stream) in &room.taken {\n                        if let Ok(mut stream) = stream.lock() {\n                            let _ = write(&mut *stream, &lmsg);\n                        }\n                    }\n                }\n            }\n            ToRoom::Coop(event) => {\n                let cmsg = FromRoom::Coop { from: mac, event };\n                for (member, stream) in &room.taken {\n                    if member.mac != mac {\n                        if let Ok(mut stream) = stream.lock() {\n                            let _ = write(&mut *stream, &cmsg);\n                        }\n                    }\n                }\n            }\n            ToRoom::Hello { .. } => {}\n        }",
+        );
+        src = src.replace(
+            "        room.taken.retain(|(member, _)| member.mac != mac);\n        room.presences.remove(&mac);",
+            "        room.taken.retain(|(member, _)| member.mac != mac);\n        room.presences.remove(&mac);\n        if room.leader == Some(mac) {\n            room.leader = room.taken.first().map(|(m, _)| m.mac);\n            let lmsg = FromRoom::Leader(room.leader);\n            for (_, stream) in &room.taken {\n                if let Ok(mut stream) = stream.lock() {\n                    let _ = write(&mut *stream, &lmsg);\n                }\n            }\n        }",
+        );
+        src = src.replace(
+            "    presences: Mutex<HashMap<Mac, (RemotePlayer, std::time::Instant)>>,\n}",
+            "    presences: Mutex<HashMap<Mac, (RemotePlayer, std::time::Instant)>>,\n    leader: Mutex<Option<Mac>>,\n    coop_events: Mutex<VecDeque<(Mac, CoopEvent)>>,\n}",
+        );
+        src = src.replace(
+            "            presences: Mutex::new(HashMap::new()),\n        });",
+            "            presences: Mutex::new(HashMap::new()),\n            leader: Mutex::new(None),\n            coop_events: Mutex::new(VecDeque::new()),\n        });",
+        );
+        src = src.replace(
+            "                presences: Mutex::new(HashMap::new()),\n            })",
+            "                presences: Mutex::new(HashMap::new()),\n                leader: Mutex::new(None),\n                coop_events: Mutex::new(VecDeque::new()),\n            })",
+        );
+        src = src.replace(
+            "                        FromRoom::Welcome { .. } | FromRoom::Refused(_) => {}",
+            "                        FromRoom::Leader(leader_mac) => {\n                            if let Ok(mut l) = receiving.leader.lock() {\n                                *l = leader_mac;\n                            }\n                        }\n                        FromRoom::Coop { from, event } => {\n                            if let Ok(mut q) = receiving.coop_events.lock() {\n                                if q.len() >= 256 {\n                                    q.pop_front();\n                                }\n                                q.push_back((from, event));\n                            }\n                        }\n                        FromRoom::Welcome { .. } | FromRoom::Refused(_) => {}",
+        );
+        src = src.replace(
+            "    /// the console's way into the room, leaves what came b4 it",
+            "    pub fn leader(&self) -> Option<Mac> {\n        self.shared.leader.lock().ok().and_then(|l| *l)\n    }\n\n    pub fn is_leader(&self) -> bool {\n        self.leader() == Some(self.shared.mac)\n    }\n\n    pub fn set_leader(&self, mac: Mac) {\n        let _ = self.outbox.send(ToRoom::SetLeader(mac));\n    }\n\n    pub fn send_coop(&self, event: CoopEvent) {\n        let _ = self.outbox.send(ToRoom::Coop(event));\n    }\n\n    pub fn drain_coop(&self) -> Vec<(Mac, CoopEvent)> {\n        self.shared\n            .coop_events\n            .lock()\n            .map(|mut q| q.drain(..).collect())\n            .unwrap_or_default()\n    }\n\n    /// the console's way into the room, leaves what came b4 it",
+        );
+        src = src.replace(
+            "        assert!(alice.remote_players().is_empty());\n    }\n}",
+            "        assert!(alice.remote_players().is_empty());\n    }\n\n    #[test]\n    fn a_room_tracks_leader_and_routes_coop_events() {\n        let server = Server::start(0, \"coop2\", \"\", 4).unwrap();\n        let address = format!(\"127.0.0.1:{}\", server.port());\n        let alice = Connection::join(&address, \"Alice\", \"\").unwrap();\n        let bob = Connection::join(&address, \"Bob\", \"\").unwrap();\n\n        for _ in 0..200 {\n            if alice.is_leader() && bob.leader() == Some(alice.mac()) {\n                break;\n            }\n            std::thread::sleep(Duration::from_millis(5));\n        }\n        assert!(alice.is_leader());\n        assert!(!bob.is_leader());\n\n        alice.send_coop(CoopEvent::ZoneWarp { zone_id: 42, x: 10.0, y: 0.0, z: -20.0, yaw: 0.5 });\n        let mut evs = Vec::new();\n        for _ in 0..200 {\n            evs = bob.drain_coop();\n            if !evs.is_empty() {\n                break;\n            }\n            std::thread::sleep(Duration::from_millis(5));\n        }\n        assert_eq!(evs.len(), 1);\n        assert!(matches!(evs[0].1, CoopEvent::ZoneWarp { zone_id: 42, .. }));\n\n        alice.set_leader(bob.mac());\n        for _ in 0..200 {\n            if bob.is_leader() && !alice.is_leader() {\n                break;\n            }\n            std::thread::sleep(Duration::from_millis(5));\n        }\n        assert!(bob.is_leader());\n\n        drop(bob);\n        for _ in 0..200 {\n            if alice.is_leader() {\n                break;\n            }\n            std::thread::sleep(Duration::from_millis(5));\n        }\n        assert!(alice.is_leader());\n    }\n}",
+        );
+    }
+
+    // Upgrade V2 -> V3: Cutscene synchronization barrier (`CutsceneState(bool)`)
+    if !src.contains("BLUEORB_COOP_ROOM_V3") {
+        src = src.replace(
+            "// BLUEORB_COOP_ROOM_V2",
+            "// BLUEORB_COOP_ROOM_V2\n// BLUEORB_COOP_ROOM_V3",
+        );
+        src = src.replace(
+            "    BattleEnd,\n    PartySync { party_count: u8, mons: Vec<PartyMonSummary> },",
+            "    BattleEnd,\n    CutsceneState(bool),\n    PartySync { party_count: u8, mons: Vec<PartyMonSummary> },",
+        );
+        src = src.replace(
+            "        assert_eq!(evs.len(), 1);\n        assert!(matches!(evs[0].1, CoopEvent::ZoneWarp { zone_id: 42, .. }));",
+            "        assert_eq!(evs.len(), 1);\n        assert!(matches!(evs[0].1, CoopEvent::ZoneWarp { zone_id: 42, .. }));\n\n        alice.send_coop(CoopEvent::CutsceneState(true));\n        let mut cut_evs = Vec::new();\n        for _ in 0..200 {\n            cut_evs = bob.drain_coop();\n            if !cut_evs.is_empty() {\n                break;\n            }\n            std::thread::sleep(Duration::from_millis(5));\n        }\n        assert_eq!(cut_evs.len(), 1);\n        assert!(matches!(cut_evs[0].1, CoopEvent::CutsceneState(true)));",
+        );
+    }
+
+    fs::write(&room_rs, src).map_err(|e| e.to_string())
 }
 
 /// 1. Rend la compilation C de `3dsrecomp` incrémentale : si `.o` est plus récent que `.c` et non vide, on le réutilise.
@@ -674,15 +833,50 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "TopShape::Wide21x9 => 560.0,\n            TopShape::Wide32x9 => 240.0 * 32.0 / 9.0,",
             );
         }
+        if !src.contains("coop_enabled") {
+            src = src.replace(
+                "    pub room_port: u16,\n}",
+                "    pub room_port: u16,\n    #[serde(default = \"blueorb_true\")]\n    pub coop_enabled: bool,\n    #[serde(default = \"blueorb_true\")]\n    pub coop_show_hud: bool,\n    #[serde(default = \"blueorb_true\")]\n    pub coop_show_names: bool,\n    #[serde(default)]\n    pub coop_avatar_style: u8,\n}",
+            );
+            src = src.replace(
+                "            room_port: zakuro_core::room::DEFAULT_PORT,\n        }",
+                "            room_port: zakuro_core::room::DEFAULT_PORT,\n            coop_enabled: true,\n            coop_show_hud: true,\n            coop_show_names: true,\n            coop_avatar_style: 0,\n        }",
+            );
+            src = src.replace(
+                "fn or_default<'de, D, T>(deserializer: D)",
+                "fn blueorb_true() -> bool { true }\n\nfn or_default<'de, D, T>(deserializer: D)",
+            );
+        }
+        if !src.contains("coop_follow_leader") {
+            src = src.replace(
+                "    #[serde(default)]\n    pub coop_avatar_style: u8,\n}",
+                "    #[serde(default)]\n    pub coop_avatar_style: u8,\n    #[serde(default = \"blueorb_true\")]\n    pub coop_follow_leader: bool,\n    #[serde(default = \"blueorb_true\")]\n    pub coop_double_battle: bool,\n    #[serde(default)]\n    pub coop_force_unlock: bool,\n}",
+            );
+            src = src.replace(
+                "            coop_avatar_style: 0,\n        }",
+                "            coop_avatar_style: 0,\n            coop_follow_leader: true,\n            coop_double_battle: true,\n            coop_force_unlock: false,\n        }",
+            );
+        }
+        if !src.contains("coop_sync_cutscenes") {
+            src = src.replace(
+                "    #[serde(default)]\n    pub coop_force_unlock: bool,\n}",
+                "    #[serde(default)]\n    pub coop_force_unlock: bool,\n    #[serde(default = \"blueorb_true\")]\n    pub coop_sync_cutscenes: bool,\n}",
+            );
+            src = src.replace(
+                "            coop_force_unlock: false,\n        }",
+                "            coop_force_unlock: false,\n            coop_sync_cutscenes: true,\n        }",
+            );
+        }
         fs::write(&settings_rs, src).map_err(|e| e.to_string())?;
     }
 
-    // 4e. `menus.rs` : Assistant d'accueil 1er lancement (`library`) + Menu Pause accessible (`game`)
+    // 4e. `menus.rs` & `coop.rs` : Assistant d'accueil + Co-op Multijoueur + Menu Pause accessible (`game`)
     fs::write(zakuro_src.join("launcher_bg.jpg"), LAUNCHER_BG_JPG).map_err(|e| e.to_string())?;
+    fs::write(zakuro_src.join("coop.rs"), ZAKURO_COOP_RS).map_err(|e| e.to_string())?;
     let menus_rs = zakuro_src.join("menus.rs");
     if menus_rs.exists() {
         let mut src = read_lf(&menus_rs).map_err(|e| e.to_string())?;
-        if src.contains("BLUEORB_WIDE_CONSOLE_MENU") && !src.contains("BLUEORB_LAUNCHER_UI_V2") {
+        if src.contains("BLUEORB_WIDE_CONSOLE_MENU") && !src.contains("BLUEORB_LAUNCHER_UI_V3") {
             let _ = std::process::Command::new("git")
                 .args(["-C", &zakuro_repo.to_string_lossy(), "checkout", "--", "crates/zakuro/src/menus.rs"])
                 .status();
@@ -691,7 +885,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
         if !src.contains("BLUEORB_WIDE_CONSOLE_MENU") {
             src = src.replace(
                 "    CheatsFolder,\n}",
-                "    CheatsFolder,\n    PickRomFile,\n    CleanResiduals,\n    InstallToApplications,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n}",
+                "    CheatsFolder,\n    PickRomFile,\n    CleanResiduals,\n    InstallToApplications,\n    ToggleDualWindows,\n    SetLayout(Screens),\n    SetTopShape(TopShape),\n    OpenMultiplayer,\n    JoinLanRoom(String),\n    ToggleCoopPreview,\n}",
             );
             src = src.replace(
                 "    pub menu_open: bool,",
@@ -842,6 +1036,13 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             }
             src = src.replace(old_game_fn, WIDE_CONSOLE_GAME_MENU_RS);
             src.push_str(WIDE_CONSOLE_WIDGET_HELPERS_RS);
+            fs::write(&menus_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_COOP_ACTIONS_V2") {
+            src = src.replace(
+                "    ToggleCoopPreview,\n}",
+                "    // BLUEORB_COOP_ACTIONS_V2\n    ToggleCoopPreview,\n    SetCoopLeader(zakuro_core::room::Mac),\n    TeleportToLeader,\n}",
+            );
             fs::write(&menus_rs, src).map_err(|e| e.to_string())?;
         }
     }
@@ -1350,6 +1551,77 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "            WindowEvent::Resized(size) => {\n                if let Some(backend) = &mut self.backend {\n                    backend.resize(size.width, size.height);\n                }\n            }",
                 "            WindowEvent::Resized(size) => {\n                if let Some(backend) = &mut self.backend {\n                    backend.resize(size.width, size.height);\n                }\n            }\n            WindowEvent::ScaleFactorChanged { .. } => {\n                // BLUEORB_SCALE_FACTOR_RESIZE\n                if let (Some(backend), Some(window)) = (&mut self.backend, &self.window) {\n                    let size = window.inner_size();\n                    backend.resize(size.width, size.height);\n                }\n            }",
             );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_COOP_MOD_V1") {
+            src = src.replace("mod gui;", "// BLUEORB_COOP_MOD_V1\nmod coop;\nmod gui;");
+            src = src.replace(
+                "    room_server: Option<zakuro_core::room::Server>,\n    room: Option<zakuro_core::room::Connection>,",
+                "    room_server: Option<zakuro_core::room::Server>,\n    room: Option<zakuro_core::room::Connection>,\n    coop: coop::CoopRuntime,",
+            );
+            src = src.replace(
+                "        room_server: None,\n        room: None,",
+                "        room_server: None,\n        room: None,\n        coop: coop::CoopRuntime::new(),",
+            );
+            src = src.replace(
+                "        self.game = None;\n        self.overlay_corner = None;",
+                "        self.game = None;\n        self.overlay_corner = None;\n        self.coop.reset_game();",
+            );
+            src = src.replace(
+                "                KeyCode::F6 => {",
+                "                KeyCode::F4 => self.menus.multiplayer_open = !self.menus.multiplayer_open,\n                KeyCode::F6 => {",
+            );
+            src = src.replace(
+                "            Action::JoinRoom => {\n                let address = self.settings.room_address.clone();\n                self.join_room(&address);\n            }\n            Action::LeaveRoom => self.leave_room(),",
+                "            Action::OpenMultiplayer => self.menus.multiplayer_open = true,\n            Action::JoinLanRoom(address) => {\n                self.settings.room_address = address.clone();\n                self.settings.save();\n                self.join_room(&address);\n            }\n            Action::ToggleCoopPreview => self.coop.preview_buddy = !self.coop.preview_buddy,\n            Action::JoinRoom => {\n                let address = self.settings.room_address.clone();\n                self.join_room(&address);\n            }\n            Action::LeaveRoom => self.leave_room(),",
+            );
+            src = src.replace(
+                "        self.download_play();",
+                "        self.download_play();\n        let hosting_info = self.room_server.as_ref().map(|srv| {\n            let rname = match self.settings.room_name.trim() {\n                \"\" => \"BlueOrb Room\",\n                n => n,\n            };\n            (rname, srv.port(), self.room.as_ref().map_or(1, |r| r.members().len().max(1)))\n        });\n        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());",
+            );
+            src = src.replace(
+                "        let outcome = game.system.run_frame();",
+                "        let outcome = game.system.run_frame();\n        self.coop.sample_game(&mut game.system.memory, self.room.as_ref(), self.settings.coop_avatar_style);",
+            );
+            src = src.replace(
+                "        let (menus, library, settings, jobs, waiting) = (&mut self.menus, &self.library, &mut self.settings, &self.jobs, &self.waiting);",
+                "        let coop_frame = self.coop.build_frame();\n        let coop_ref = &self.coop;\n        let (menus, library, settings, jobs, waiting) = (&mut self.menus, &self.library, &mut self.settings, &self.jobs, &self.waiting);",
+            );
+            src = src.replace(
+                "                    actions.extend(menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref(), settings, cheats.as_deref(), active_layout, active_top_shape));",
+                "                    actions.extend(menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref(), settings, cheats.as_deref(), active_layout, active_top_shape));\n                    if !menus.menu_open && settings.coop_enabled {\n                        if let Some(top_rect) = coop::top_screen_rect_points(window, settings, active_layout, active_top_shape) {\n                            coop::render_overworld_coop(ui.ctx(), top_rect, &coop_frame, settings);\n                        }\n                    }",
+            );
+            src = src.replace(
+                "            if menus.multiplayer_open {\n                actions.extend(menus.multiplayer(ui.ctx(), settings, room.as_ref()));\n            }",
+                "            if menus.multiplayer_open {\n                actions.extend(coop::draw_multiplayer_window(ui.ctx(), &mut menus.multiplayer_open, &mut menus.room_password, settings, room.as_ref(), coop_ref));\n            }",
+            );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_COOP_MOD_V2") {
+            src = src.replace(
+                "// BLUEORB_COOP_MOD_V1",
+                "// BLUEORB_COOP_MOD_V1\n// BLUEORB_COOP_MOD_V2",
+            );
+            src = src.replace(
+                "            Action::ToggleCoopPreview => self.coop.preview_buddy = !self.coop.preview_buddy,",
+                "            Action::ToggleCoopPreview => self.coop.preview_buddy = !self.coop.preview_buddy,\n            Action::SetCoopLeader(mac) => {\n                if let Some(room) = &self.room {\n                    room.set_leader(mac);\n                }\n            }\n            Action::TeleportToLeader => self.coop.request_manual_warp(),",
+            );
+            src = src.replace(
+                "        self.coop.sample_game(&mut game.system.memory, self.room.as_ref(), self.settings.coop_avatar_style);",
+                "        self.coop.sample_game(&mut game.system.memory, self.room.as_ref(), &self.settings);",
+            );
+            src = src.replace(
+                "        let coop_frame = self.coop.build_frame();",
+                "        let coop_frame = self.coop.build_frame(&self.settings);",
+            );
+            src = src.replace(
+                "        let coop_ref = &self.coop;",
+                "        let coop_ref = &self.coop;\n        let room_conn = self.room.as_ref();",
+            );
+            src = src.replace(
+                "                actions.extend(coop::draw_multiplayer_window(ui.ctx(), &mut menus.multiplayer_open, &mut menus.room_password, settings, room.as_ref(), coop_ref));",
+                "                actions.extend(coop::draw_multiplayer_window(ui.ctx(), &mut menus.multiplayer_open, &mut menus.room_password, settings, room.as_ref(), room_conn, coop_ref));",
+            );
             fs::write(&lib_rs, src).map_err(|e| e.to_string())?;
         }
     }
@@ -1512,7 +1784,7 @@ fn apply_blueorb_console_theme(ctx: &egui::Context) {
 const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Full-bleed desktop game launcher with edge-to-edge twilight ocean vista,
     /// floating glass header, and bottom Hero Launch Dock.
     pub fn library(&mut self, ui: &mut egui::Ui, library: &Library, settings: &Settings, jobs: &[Job], waiting: &[Wanted]) -> Vec<Action> {
-        // BLUEORB_LAUNCHER_UI_V2
+        // BLUEORB_LAUNCHER_UI_V3
         let mut actions = Vec::new();
         let _ = (
             self.background.get(ui.ctx(), None),
@@ -1626,6 +1898,9 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Full-bleed desktop game launch
                         }
                         if launcher_glass_button(ui, "Clean Cache", active_job.is_none()) {
                             actions.push(Action::CleanResiduals);
+                        }
+                        if launcher_glass_button(ui, "Multiplayer", true) {
+                            actions.push(Action::OpenMultiplayer);
                         }
                         if show_install_apps && launcher_glass_button(ui, "Install to /Applications", true) {
                             actions.push(Action::InstallToApplications);
@@ -1899,6 +2174,7 @@ const ONBOARDING_LIBRARY_FN_RS: &str = r#"    /// Full-bleed desktop game launch
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
                         launcher_key_hint(ui, "Esc", "Settings");
+                        launcher_key_hint(ui, "F4", "Multiplayer");
                         launcher_key_hint(ui, "F6", "Ultrawide");
                         launcher_key_hint(ui, "F7", "Dual Screen");
                         launcher_key_hint(ui, "F11", "Fullscreen");
@@ -2099,6 +2375,10 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Cl
                         .show_separator_line(false)
                         .frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 0, right: 0, top: 8, bottom: 0 }))
                         .show(ui, |ui| {
+                            if console_secondary_button(ui, item_w, 32.0, "Multiplayer & Co-op", true) {
+                                self.multiplayer_open = true;
+                            }
+                            ui.add_space(6.0);
                             if console_primary_button(ui, item_w, 34.0, "Resume") {
                                 actions.push(Action::Resume);
                             }
@@ -2543,7 +2823,7 @@ const WIDE_CONSOLE_GAME_MENU_RS: &str = r#"    /// BLUEORB_WIDE_CONSOLE_MENU: Cl
                 let half = (width - 8.0) / 2.0;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    if console_secondary_button(ui, half, 32.0, "Multiplayer Rooms", true) {
+                    if console_secondary_button(ui, half, 32.0, "Multiplayer & Co-op (F4)", true) {
                         self.multiplayer_open = true;
                     }
                     if console_secondary_button(ui, half, 32.0, "Load Camera Image / QR…", true) {
