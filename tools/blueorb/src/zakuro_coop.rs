@@ -38,6 +38,8 @@ const SOLO_SCRIPTED_BATTLE_WINDOW: Duration = Duration::from_secs(2);
 const WARP_RETRY_COOLDOWN: Duration = Duration::from_secs(3);
 const WARP_ACTIVE_TIMEOUT: Duration = Duration::from_secs(20);
 const ORAS_BATTLE_MAIN_PROCESS: u32 = 0x08C6_9214;
+const ORAS_MOVEMODEL_VTABLE: u32 = 0x005D_F370;
+const ORAS_MOVEMODEL_STRIDE: u32 = 0xAB0;
 
 #[derive(Clone, Copy)]
 pub struct AvatarPalette {
@@ -178,6 +180,7 @@ pub struct SampledWorld {
     player_slot: Option<u32>,
     team_ptr: Option<u32>,
     camera: Option<WorldCamera>,
+    active_npcs: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -239,10 +242,12 @@ pub struct CoopFrame {
     pub room_connected: bool,
     pub room_name: Option<String>,
     pub room_members: Vec<(String, Mac, bool, bool)>,
+    pub native_npc_peer: Option<Mac>,
 }
 
 pub struct CoopRuntime {
     pub preview_buddy: bool,
+    pub native_3d_npc_sync: bool,
     pub lan_rooms: Vec<LanRoom>,
     pub local_ip: Option<String>,
     pub local_party_count: u8,
@@ -252,9 +257,14 @@ pub struct CoopRuntime {
     pub local_in_cutscene: bool,
     gm_slot_hint: u32,
     models_offset_hint: u32,
+    models_base_hint: Option<u32>,
     proj_offset_hint: Option<u32>,
     last_gm_scan: Instant,
     last_model_scan: Instant,
+    last_vtable_scan: Instant,
+    last_known_zone: Option<u16>,
+    hijacked_npc: Option<(u32, [f32; 3], [f32; 3])>,
+    native_npc_peer: Option<Mac>,
     pub last_diag: String,
     last_sample: Option<SampledWorld>,
     last_presence_sent: Instant,
@@ -283,6 +293,7 @@ impl CoopRuntime {
         let now = Instant::now();
         Self {
             preview_buddy: false,
+            native_3d_npc_sync: false,
             lan_rooms: Vec::new(),
             local_ip: detect_local_lan_ip(),
             local_party_count: 0,
@@ -292,9 +303,14 @@ impl CoopRuntime {
             local_in_cutscene: false,
             gm_slot_hint: 0x0062_F7C4,
             models_offset_hint: 0x369C,
+            models_base_hint: None,
             proj_offset_hint: None,
             last_gm_scan: now - Duration::from_secs(5),
             last_model_scan: now - Duration::from_secs(5),
+            last_vtable_scan: now - Duration::from_secs(5),
+            last_known_zone: None,
+            hijacked_npc: None,
+            native_npc_peer: None,
             last_diag: "init".to_owned(),
             last_sample: None,
             last_presence_sent: now - Duration::from_secs(1),
@@ -330,6 +346,10 @@ impl CoopRuntime {
         self.last_leader_zone = None;
         self.was_in_battle = false;
         self.models_offset_hint = 0x369C;
+        self.models_base_hint = None;
+        self.last_known_zone = None;
+        self.hijacked_npc = None;
+        self.native_npc_peer = None;
         self.last_diag = "reset".to_owned();
         self.pending_warp = None;
         self.warp_paused_by_cutscene = false;
@@ -398,9 +418,12 @@ impl CoopRuntime {
             memory,
             &mut self.gm_slot_hint,
             &mut self.models_offset_hint,
+            &mut self.models_base_hint,
             &mut self.proj_offset_hint,
             &mut self.last_gm_scan,
             &mut self.last_model_scan,
+            &mut self.last_vtable_scan,
+            &mut self.last_known_zone,
             &mut self.last_diag,
             settings.coop_avatar_style,
         );
@@ -614,19 +637,74 @@ impl CoopRuntime {
             }
 
             self.was_in_battle = world.presence.in_battle;
-        } else if let (Some(conn), true) = (room, self.last_sample.is_none()) {
-            if self.last_presence_sent.elapsed() >= Duration::from_millis(500) {
-                conn.send_presence(PlayerPresence {
-                    zone_id: 0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                    yaw: 0.0,
-                    speed: 0.0,
-                    avatar_style: settings.coop_avatar_style,
-                    in_battle: false,
-                });
-                self.last_presence_sent = Instant::now();
+
+            // Optional real 3D in-game MoveModel NPC sync for Player 2
+            let synced_peer = if self.native_3d_npc_sync && world.in_overworld && !world.in_cutscene && !world.active_npcs.is_empty() {
+                self.smoothed
+                    .iter()
+                    .find(|(_, r)| r.presence.zone_id == world.presence.zone_id || r.presence.zone_id == 0)
+                    .map(|(mac, r)| (*mac, [r.x, r.y, r.z], r.yaw))
+                    .or_else(|| {
+                        self.preview_buddy.then(|| {
+                            let angle = self.started_at.elapsed().as_secs_f32() * 1.15;
+                            let pos = [
+                                world.presence.x + angle.cos() * 26.0,
+                                world.presence.y,
+                                world.presence.z + angle.sin() * 26.0,
+                            ];
+                            let yaw = (-angle.sin()).atan2(angle.cos());
+                            ([0x02, 0x42, 0x4C, 0x55, 0x45, 0x01], pos, yaw)
+                        })
+                    })
+            } else {
+                None
+            };
+            if let Some((peer_mac, pos, yaw)) = synced_peer {
+                let target_npc = self
+                    .hijacked_npc
+                    .map(|(addr, _, _)| addr)
+                    .filter(|addr| world.active_npcs.contains(addr))
+                    .or_else(|| world.active_npcs.first().copied());
+                if let Some(npc_addr) = target_npc {
+                    if self.hijacked_npc.is_some_and(|(old, _, _)| old != npc_addr) {
+                        restore_hijacked_npc(memory, &mut self.hijacked_npc);
+                    }
+                    if self.hijacked_npc.is_none() {
+                        if let (Some(wpos), Some(dpos)) = (
+                            read_vec3(memory, npc_addr.wrapping_add(0xEC)),
+                            read_vec3(memory, npc_addr.wrapping_add(0x114)),
+                        ) {
+                            self.hijacked_npc = Some((npc_addr, wpos, dpos));
+                        }
+                    }
+                    teleport_player_coords(memory, npc_addr, pos);
+                    write_model_facing(memory, npc_addr, yaw);
+                    self.native_npc_peer = Some(peer_mac);
+                } else {
+                    restore_hijacked_npc(memory, &mut self.hijacked_npc);
+                    self.native_npc_peer = None;
+                }
+            } else {
+                restore_hijacked_npc(memory, &mut self.hijacked_npc);
+                self.native_npc_peer = None;
+            }
+        } else {
+            restore_hijacked_npc(memory, &mut self.hijacked_npc);
+            self.native_npc_peer = None;
+            if let (Some(conn), true) = (room, self.last_sample.is_none()) {
+                if self.last_presence_sent.elapsed() >= Duration::from_millis(500) {
+                    conn.send_presence(PlayerPresence {
+                        zone_id: 0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                        yaw: 0.0,
+                        speed: 0.0,
+                        avatar_style: settings.coop_avatar_style,
+                        in_battle: false,
+                    });
+                    self.last_presence_sent = Instant::now();
+                }
             }
         }
 
@@ -867,6 +945,7 @@ impl CoopRuntime {
             room_connected,
             room_name,
             room_members,
+            native_npc_peer: self.native_npc_peer,
         }
     }
 
@@ -1043,6 +1122,13 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
                 .map(|hp| (feet.y - hp.y).abs())
                 .unwrap_or_else(|| (top_rect.height() * 2.2 / (-cam_depth).max(20.0)).clamp(20.0, 96.0))
                 .clamp(22.0, (top_rect.height() * 0.34).max(24.0));
+            if frame.native_npc_peer == Some(peer.mac) {
+                if settings.coop_show_names {
+                    let head_top = head.unwrap_or_else(|| Pos2::new(feet.x, feet.y - h_px));
+                    paint_nameplate(&clipped, Pos2::new(head_top.x, head_top.y - 10.0), peer);
+                }
+                continue;
+            }
             let cam_yaw = cam.view[2][0].atan2(cam.view[2][2]);
             let rel_yaw = wrap_angle(peer.yaw - cam_yaw);
             paint_world_avatar(
@@ -1063,32 +1149,11 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
         }
     }
 
-    // Overlay fallback: when the 3D overworld camera or zone cannot be resolved yet,
-    // keep both the Sapphire Bot and same-zone/syncing teammates visible on the top screen.
-    if frame.camera.is_none() || frame.local_zone.is_none() || frame.local_zone == Some(0) {
+    // Test bot fallback: when the game camera cannot be resolved yet, only draw the local Sapphire Bot
+    // so real teammates never get stuck as a static screen-space placeholder.
+    if frame.camera.is_none() || frame.local_zone.is_none() {
         let c = top_rect.center();
         let h_px = (top_rect.height() * 0.2).clamp(24.0, 60.0);
-        let non_bots: Vec<&RenderPeer> = frame
-            .peers
-            .iter()
-            .filter(|p| {
-                p.mac[..5] != [0x02, 0x42, 0x4C, 0x55, 0x45]
-                    && (frame.local_zone.is_none()
-                        || frame.local_zone == Some(0)
-                        || p.zone_id == 0
-                        || Some(p.zone_id) == frame.local_zone)
-            })
-            .collect();
-        let total = non_bots.len();
-        for (idx, peer) in non_bots.into_iter().enumerate() {
-            let spread = (idx as f32 - (total.saturating_sub(1) as f32) * 0.5) * 56.0;
-            let offset_x = if total == 1 { 48.0 } else { spread };
-            let feet = Pos2::new(
-                (c.x + offset_x).clamp(top_rect.left() + 24.0, top_rect.right() - 24.0),
-                c.y + top_rect.height() * 0.16,
-            );
-            paint_world_avatar(&clipped, feet, h_px, peer, 0.0, time_s, settings.coop_show_names);
-        }
         for peer in frame.peers.iter().filter(|p| p.mac[..5] == [0x02, 0x42, 0x4C, 0x55, 0x45]) {
             let ang = time_s * 1.15;
             let feet = Pos2::new(
@@ -1456,40 +1521,44 @@ fn paint_world_avatar(
     }
 
     if show_name {
-        let mut label = if peer.is_leader {
-            format!("[Chef] {}", peer.nickname)
-        } else {
-            peer.nickname.clone()
-        };
-        if peer.in_cutscene {
-            label.push_str(" [Cutscene]");
-        } else if peer.in_battle {
-            label.push_str(" [Battle]");
-        }
-        let font = FontId::proportional(11.5);
-        let galley = painter.layout_no_wrap(label, font, Color32::WHITE);
-        let g_sz = galley.size();
-        let pill_sz = Vec2::new(g_sz.x + 18.0, 20.0);
-        let pill_center = Pos2::new(head_c.x, head_c.y - head_r - 16.0);
-        let pill = Rect::from_center_size(pill_center, pill_sz);
-        painter.rect_filled(pill, CornerRadius::same(10), Color32::from_rgba_unmultiplied(10, 17, 30, 214));
-        let border_col = if peer.is_leader {
-            Color32::from_rgb(255, 214, 96)
-        } else {
-            Color32::from_rgba_unmultiplied(pal.accent.r(), pal.accent.g(), pal.accent.b(), 150)
-        };
-        painter.rect_stroke(pill, CornerRadius::same(10), Stroke::new(1.0, border_col), StrokeKind::Inside);
-        painter.circle_filled(
-            Pos2::new(pill.left() + 8.0, pill.center().y),
-            3.0,
-            if peer.is_leader { Color32::from_rgb(255, 214, 96) } else { pal.cap },
-        );
-        painter.galley(
-            Pos2::new(pill.left() + 14.0, pill.center().y - g_sz.y * 0.5),
-            galley,
-            Color32::WHITE,
-        );
+        paint_nameplate(painter, Pos2::new(head_c.x, head_c.y - head_r - 16.0), peer);
     }
+}
+
+fn paint_nameplate(painter: &egui::Painter, pill_center: Pos2, peer: &RenderPeer) {
+    let pal = avatar_palette(peer.avatar_style);
+    let mut label = if peer.is_leader {
+        format!("[Chef] {}", peer.nickname)
+    } else {
+        peer.nickname.clone()
+    };
+    if peer.in_cutscene {
+        label.push_str(" [Cutscene]");
+    } else if peer.in_battle {
+        label.push_str(" [Battle]");
+    }
+    let font = FontId::proportional(11.5);
+    let galley = painter.layout_no_wrap(label, font, Color32::WHITE);
+    let g_sz = galley.size();
+    let pill_sz = Vec2::new(g_sz.x + 18.0, 20.0);
+    let pill = Rect::from_center_size(pill_center, pill_sz);
+    painter.rect_filled(pill, CornerRadius::same(10), Color32::from_rgba_unmultiplied(10, 17, 30, 214));
+    let border_col = if peer.is_leader {
+        Color32::from_rgb(255, 214, 96)
+    } else {
+        Color32::from_rgba_unmultiplied(pal.accent.r(), pal.accent.g(), pal.accent.b(), 150)
+    };
+    painter.rect_stroke(pill, CornerRadius::same(10), Stroke::new(1.0, border_col), StrokeKind::Inside);
+    painter.circle_filled(
+        Pos2::new(pill.left() + 8.0, pill.center().y),
+        3.0,
+        if peer.is_leader { Color32::from_rgb(255, 214, 96) } else { pal.cap },
+    );
+    painter.galley(
+        Pos2::new(pill.left() + 14.0, pill.center().y - g_sz.y * 0.5),
+        galley,
+        Color32::WHITE,
+    );
 }
 
 fn paint_edge_indicator(
@@ -1934,6 +2003,10 @@ pub fn draw_multiplayer_window(
                     if ui.checkbox(&mut preview, "Solo Preview Buddy (test animated co-op trainer near you)").changed() {
                         actions.push(Action::ToggleCoopPreview);
                     }
+                    let mut native_npc = coop.native_3d_npc_sync;
+                    if ui.checkbox(&mut native_npc, "Real 3D In-Game NPC Model (uses a map NPC as Player 2, Experimental)").changed() {
+                        actions.push(Action::ToggleNativeNpcSync);
+                    }
                 });
         });
 
@@ -2084,6 +2157,91 @@ fn find_player_model(
     None
 }
 
+fn find_models_base_by_vtable(
+    mem: &mut Memory,
+    hint: &mut Option<u32>,
+    last_scan: &mut Instant,
+) -> Option<u32> {
+    if let Some(base) = *hint {
+        if read_u32(mem, base) == Some(ORAS_MOVEMODEL_VTABLE)
+            && read_u32(mem, base.wrapping_add(ORAS_MOVEMODEL_STRIDE)) == Some(ORAS_MOVEMODEL_VTABLE)
+        {
+            return Some(base);
+        }
+    }
+    if last_scan.elapsed() < Duration::from_secs(1) {
+        return None;
+    }
+    *last_scan = Instant::now();
+
+    let regions: Vec<(u32, u32)> = mem
+        .mappings()
+        .filter(|m| is_heap_ptr(m.base) && m.size >= ORAS_MOVEMODEL_STRIDE * 2)
+        .map(|m| (m.base, m.size))
+        .collect();
+    let vtable_bytes = ORAS_MOVEMODEL_VTABLE.to_le_bytes();
+    let mut chunk = vec![0u8; 64 * 1024];
+    for (r_base, r_size) in regions {
+        let mut off = 0u32;
+        while off + ORAS_MOVEMODEL_STRIDE < r_size {
+            let to_read = (r_size - off).min(chunk.len() as u32) & !3;
+            if to_read < 8 {
+                break;
+            }
+            let addr = r_base.wrapping_add(off);
+            if mem.is_readable(addr, to_read) {
+                mem.read_bytes(addr, &mut chunk[..to_read as usize]);
+                for rel in (0..to_read as usize).step_by(4) {
+                    if chunk[rel..rel + 4] == vtable_bytes {
+                        let cand = addr.wrapping_add(rel as u32);
+                        if read_u32(mem, cand.wrapping_add(ORAS_MOVEMODEL_STRIDE))
+                            == Some(ORAS_MOVEMODEL_VTABLE)
+                        {
+                            let mut slot0 = cand;
+                            for _ in 0..32 {
+                                let prev = slot0.wrapping_sub(ORAS_MOVEMODEL_STRIDE);
+                                if read_u32(mem, prev) == Some(ORAS_MOVEMODEL_VTABLE) {
+                                    slot0 = prev;
+                                } else {
+                                    break;
+                                }
+                            }
+                            *hint = Some(slot0);
+                            return Some(slot0);
+                        }
+                    }
+                }
+            }
+            off += to_read;
+        }
+    }
+    None
+}
+
+fn scan_models_array(mem: &mut Memory, models_base: u32) -> (Option<u32>, Vec<u32>) {
+    let mut player = None;
+    let mut npcs = Vec::new();
+    for i in 0..32u32 {
+        let m = models_base.wrapping_add(i * ORAS_MOVEMODEL_STRIDE);
+        if !mem.is_readable(m, 0x120) {
+            break;
+        }
+        let Some(flags0) = read_u32(mem, m.wrapping_add(0x04)) else { continue };
+        if (flags0 & 1) == 0 {
+            continue;
+        }
+        let Some(id) = read_u16(mem, m.wrapping_add(0x0C)) else { continue };
+        if id == 0xFF {
+            if check_candidate_player_model(mem, m).is_some() {
+                player = Some(m);
+            }
+        } else if read_u32(mem, m) == Some(ORAS_MOVEMODEL_VTABLE) {
+            npcs.push(m);
+        }
+    }
+    (player, npcs)
+}
+
 fn fallback_overworld_camera(player: [f32; 3]) -> WorldCamera {
     let eye = [player[0], player[1] + 150.0, player[2] + 170.0];
     let target = [player[0], player[1] + 8.0, player[2]];
@@ -2191,6 +2349,52 @@ fn teleport_player_coords(mem: &mut Memory, player_slot: u32, pos: [f32; 3]) -> 
     mem.write_bytes(world_addr, &raw);
     mem.write_bytes(draw_addr, &raw);
     true
+}
+
+fn read_vec3(mem: &mut Memory, addr: u32) -> Option<[f32; 3]> {
+    let x = read_f32(mem, addr)?;
+    let y = read_f32(mem, addr.wrapping_add(4))?;
+    let z = read_f32(mem, addr.wrapping_add(8))?;
+    if x.abs() < 100_000.0 && y.abs() < 100_000.0 && z.abs() < 100_000.0 {
+        Some([x, y, z])
+    } else {
+        None
+    }
+}
+
+fn write_model_facing(mem: &mut Memory, model_addr: u32, yaw: f32) {
+    let facing_addr = model_addr.wrapping_add(0x1C);
+    if !mem.is_writable(facing_addr, 12) {
+        return;
+    }
+    let mut raw = [0u8; 12];
+    raw[0..4].copy_from_slice(&yaw.sin().to_le_bytes());
+    raw[4..8].copy_from_slice(&0.0f32.to_le_bytes());
+    raw[8..12].copy_from_slice(&yaw.cos().to_le_bytes());
+    mem.write_bytes(facing_addr, &raw);
+}
+
+fn restore_hijacked_npc(mem: &mut Memory, hijacked: &mut Option<(u32, [f32; 3], [f32; 3])>) {
+    let Some((addr, wpos, dpos)) = hijacked.take() else {
+        return;
+    };
+    if !is_heap_ptr(addr) {
+        return;
+    }
+    let mut wraw = [0u8; 12];
+    let mut draw = [0u8; 12];
+    for i in 0..3 {
+        wraw[i * 4..(i + 1) * 4].copy_from_slice(&wpos[i].to_le_bytes());
+        draw[i * 4..(i + 1) * 4].copy_from_slice(&dpos[i].to_le_bytes());
+    }
+    let wa = addr.wrapping_add(0xEC);
+    let da = addr.wrapping_add(0x114);
+    if mem.is_writable(wa, 12) {
+        mem.write_bytes(wa, &wraw);
+    }
+    if mem.is_writable(da, 12) {
+        mem.write_bytes(da, &draw);
+    }
 }
 
 /// Safely upgrades eligible standard battles (`Format::kSingle`) to `Format::kDouble` (2v2)
@@ -2442,56 +2646,77 @@ fn sample_oras_world(
     mem: &mut Memory,
     gm_slot_hint: &mut u32,
     models_offset_hint: &mut u32,
+    models_base_hint: &mut Option<u32>,
     proj_offset_hint: &mut Option<u32>,
     last_gm_scan: &mut Instant,
     last_model_scan: &mut Instant,
+    last_vtable_scan: &mut Instant,
+    last_known_zone: &mut Option<u16>,
     diag: &mut String,
     avatar_style: u8,
 ) -> Option<SampledWorld> {
-    let (gm, data_mgr, map_mgr, zone_id) = match validate_gm_slot_mode(mem, *gm_slot_hint, false) {
-        Some(v) => v,
+    let gm_info = match validate_gm_slot_mode(mem, *gm_slot_hint, false) {
+        Some(v) => Some(v),
         None => {
-            if last_gm_scan.elapsed() < Duration::from_secs(1) {
-                *diag = "GM:none".to_owned();
-                return None;
-            }
-            *last_gm_scan = Instant::now();
-            let mut found = None;
-            for strict in [true, false] {
-                for addr in (0x0058_0000..=0x0078_0000).step_by(4) {
-                    if let Some(v) = validate_gm_slot_mode(mem, addr, strict) {
-                        *gm_slot_hint = addr;
-                        found = Some(v);
+            if last_gm_scan.elapsed() >= Duration::from_secs(1) {
+                *last_gm_scan = Instant::now();
+                let mut found = None;
+                for strict in [true, false] {
+                    for addr in (0x0058_0000..=0x0078_0000).step_by(4) {
+                        if let Some(v) = validate_gm_slot_mode(mem, addr, strict) {
+                            *gm_slot_hint = addr;
+                            found = Some(v);
+                            break;
+                        }
+                    }
+                    if found.is_some() {
                         break;
                     }
                 }
-                if found.is_some() {
-                    break;
-                }
+                found
+            } else {
+                None
             }
-            let Some(v) = found else {
-                *diag = "GM:none".to_owned();
-                return None;
-            };
-            v
         }
     };
 
-    let in_cutscene = is_event_or_cutscene_active(mem, gm);
-    let (team_ptr, party_count, party_mons) = read_party_summary(mem, data_mgr);
+    let (has_gm, in_cutscene, team_ptr, party_count, party_mons, map_mgr, gm_zone, model_mgr) =
+        match gm_info {
+            Some((gm, data_mgr, map_mgr, zone)) => {
+                let (tp, pc, pm) = read_party_summary(mem, data_mgr);
+                let mm = read_u32(mem, data_mgr.wrapping_add(0x20)).filter(|&p| is_heap_ptr(p));
+                (true, is_event_or_cutscene_active(mem, gm), tp, pc, pm, map_mgr, zone, mm)
+            }
+            None => (false, false, None, 0, Vec::new(), 0, 0, None),
+        };
 
-    let model_mgr = read_u32(mem, data_mgr.wrapping_add(0x20)).filter(|&p| is_heap_ptr(p));
-    let player_slot = model_mgr.and_then(|mm| find_player_model(mem, mm, models_offset_hint, last_model_scan));
+    let mut player_slot = model_mgr.and_then(|mm| find_player_model(mem, mm, models_offset_hint, last_model_scan));
+    let mut active_npcs = Vec::new();
+    let mut vm_ok = false;
+
+    if let Some(base) = find_models_base_by_vtable(mem, models_base_hint, last_vtable_scan) {
+        vm_ok = true;
+        let (vp, npcs) = scan_models_array(mem, base);
+        active_npcs = npcs;
+        if player_slot.is_none() {
+            player_slot = vp;
+        }
+    }
 
     let Some(player_base) = player_slot else {
+        if !has_gm {
+            *diag = "GM:none VM:none".to_owned();
+            return None;
+        }
         let in_battle = is_battle_active(mem, team_ptr);
         *diag = format!(
-            "GM:ok Z:{zone_id} MM:{} P:none Cam:none",
+            "GM:ok Z:{gm_zone} MM:{} VM:{} P:none Cam:none",
             if model_mgr.is_some() { "yes" } else { "no" },
+            if vm_ok { "ok" } else { "none" },
         );
         return Some(SampledWorld {
             presence: PlayerPresence {
-                zone_id,
+                zone_id: gm_zone,
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
@@ -2508,15 +2733,30 @@ fn sample_oras_world(
             player_slot: None,
             team_ptr,
             camera: None,
+            active_npcs,
         });
     };
 
-    let px = read_f32(mem, player_base.wrapping_add(0x114))?;
-    let py = read_f32(mem, player_base.wrapping_add(0x118))?;
-    let pz = read_f32(mem, player_base.wrapping_add(0x11C))?;
+    let mut px = read_f32(mem, player_base.wrapping_add(0x114))?;
+    let mut py = read_f32(mem, player_base.wrapping_add(0x118))?;
+    let mut pz = read_f32(mem, player_base.wrapping_add(0x11C))?;
+    if px == 0.0 && py == 0.0 && pz == 0.0 {
+        if let Some([wx, wy, wz]) = read_vec3(mem, player_base.wrapping_add(0xEC)) {
+            px = wx;
+            py = wy;
+            pz = wz;
+        }
+    }
     if px.abs() > 100_000.0 || py.abs() > 100_000.0 || pz.abs() > 100_000.0 {
         return None;
     }
+
+    let zone_id = if gm_zone > 0 {
+        *last_known_zone = Some(gm_zone);
+        gm_zone
+    } else {
+        last_known_zone.unwrap_or(1)
+    };
 
     let fx = read_f32(mem, player_base.wrapping_add(0x1C)).unwrap_or(0.0);
     let fz = read_f32(mem, player_base.wrapping_add(0x24)).unwrap_or(1.0);
@@ -2525,57 +2765,68 @@ fn sample_oras_world(
     let yaw = fx.atan2(fz);
     let speed = mx.hypot(mz);
 
-    let renderer = read_u32(mem, map_mgr.wrapping_add(0x100)).filter(|&p| is_heap_ptr(p));
+    let renderer = if is_heap_ptr(map_mgr) {
+        read_u32(mem, map_mgr.wrapping_add(0x100)).filter(|&p| is_heap_ptr(p))
+    } else {
+        None
+    };
     let stereo_cam = renderer.and_then(|r| {
         read_u32(mem, r.wrapping_add(0xAA4))
             .filter(|&p| is_heap_ptr(p))
             .or_else(|| read_u32(mem, r.wrapping_add(0xAB8)).filter(|&p| is_heap_ptr(p)))
     });
 
-    let camera = stereo_cam
-        .and_then(|sc| {
-            let view = read_mtx34(mem, sc.wrapping_add(0x34)).filter(|v| validate_view_matrix(v, [px, py + 9.0, pz]))?;
-            let cam_p = world_to_camera(&view, [px, py + 9.0, pz]);
-            let left_cam = read_u32(mem, sc.wrapping_add(0x98)).filter(|&p| is_heap_ptr(p));
+    let real_cam = stereo_cam.and_then(|sc| {
+        let view = read_mtx34(mem, sc.wrapping_add(0x34)).filter(|v| validate_view_matrix(v, [px, py + 9.0, pz]))?;
+        let cam_p = world_to_camera(&view, [px, py + 9.0, pz]);
+        let left_cam = read_u32(mem, sc.wrapping_add(0x98)).filter(|&p| is_heap_ptr(p));
 
-            let mut resolved_proj = None;
-            if let Some(lc) = left_cam {
-                if let Some(off) = *proj_offset_hint {
-                    if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
-                        if let Some((rot, rs, us)) = validate_proj_matrix(&pm, cam_p) {
-                            resolved_proj = Some((pm, rot, rs, us));
-                        }
+        let mut resolved_proj = None;
+        if let Some(lc) = left_cam {
+            if let Some(off) = *proj_offset_hint {
+                if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
+                    if let Some((rot, rs, us)) = validate_proj_matrix(&pm, cam_p) {
+                        resolved_proj = Some((pm, rot, rs, us));
                     }
                 }
-                if resolved_proj.is_none() {
-                    for off in (0x00u32..=0x180).step_by(4) {
-                        if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
-                            if let Some((rot, rs, us)) = validate_proj_matrix(&pm, cam_p) {
-                                *proj_offset_hint = Some(off);
-                                resolved_proj = Some((pm, rot, rs, us));
-                                break;
-                            }
+            }
+            if resolved_proj.is_none() {
+                for off in (0x00u32..=0x180).step_by(4) {
+                    if let Some(pm) = read_mtx44(mem, lc.wrapping_add(off)) {
+                        if let Some((rot, rs, us)) = validate_proj_matrix(&pm, cam_p) {
+                            *proj_offset_hint = Some(off);
+                            resolved_proj = Some((pm, rot, rs, us));
+                            break;
                         }
                     }
                 }
             }
+        }
 
-            let (proj, rotated_landscape, right_sign, up_sign) =
-                resolved_proj.unwrap_or_else(|| (default_perspective_mtx(), false, 1.0, 1.0));
-            Some(WorldCamera {
-                view,
-                proj,
-                rotated_landscape,
-                right_sign,
-                up_sign,
-            })
+        let (proj, rotated_landscape, right_sign, up_sign) =
+            resolved_proj.unwrap_or_else(|| (default_perspective_mtx(), false, 1.0, 1.0));
+        Some(WorldCamera {
+            view,
+            proj,
+            rotated_landscape,
+            right_sign,
+            up_sign,
         })
-        .or_else(|| Some(fallback_overworld_camera([px, py, pz])));
+    });
+    let used_real_cam = real_cam.is_some();
+    let camera = real_cam.or_else(|| Some(fallback_overworld_camera([px, py, pz])));
 
     let in_battle = is_battle_active(mem, team_ptr);
     *diag = format!(
-        "GM:ok Z:{zone_id} MM:yes P:ok Cam:{}",
-        if camera.is_some() { "ok" } else { "none" },
+        "GM:{} VM:{}({}) Z:{} P:({:.0},{:.0},{:.0}) Cam:{}",
+        if has_gm { "ok" } else { "no" },
+        if vm_ok { "ok" } else { "mm" },
+        active_npcs.len() + 1,
+        zone_id,
+        px,
+        py,
+        pz,
+        if used_real_cam { "3D" } else { "follow" },
     );
     Some(SampledWorld {
         presence: PlayerPresence {
@@ -2596,6 +2847,7 @@ fn sample_oras_world(
         player_slot: Some(player_base),
         team_ptr,
         camera,
+        active_npcs,
     })
 }
 
@@ -2711,5 +2963,7 @@ mod tests {
         assert!(!frame.local_in_battle);
         assert_eq!(frame.peers.len(), 1);
         assert_eq!(frame.peers[0].nickname, "Sapphire Bot");
+        assert!(frame.native_npc_peer.is_none());
+        assert!(!coop.native_3d_npc_sync);
     }
 }

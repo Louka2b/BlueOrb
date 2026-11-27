@@ -1218,6 +1218,13 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "console_secondary_button(ui, half, 32.0, \"Multiplayer & Co-op (F4)\", true)",
                 "console_secondary_button(ui, half, 32.0, if cfg!(target_os = \"macos\") { \"Multiplayer & Co-op (⌘4)\" } else { \"Multiplayer & Co-op (F4)\" }, true)",
             );
+            fs::write(&menus_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_NATIVE_NPC_V1") {
+            src = src.replace(
+                "    TeleportToPeer(zakuro_core::room::Mac),\n",
+                "    // BLUEORB_NATIVE_NPC_V1\n    TeleportToPeer(zakuro_core::room::Mac),\n    ToggleNativeNpcSync,\n",
+            );
             fs::write(&menus_rs, src).map_err(|e| e.to_string())?;
         }
     }
@@ -2587,6 +2594,17 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             src = src.replace(
                 "        if pressed && !event.repeat {\n            match code {",
                 "        if pressed && !event.repeat && (self.modifiers.super_key() || self.modifiers.control_key()) {\n            match code {\n                KeyCode::Digit4 => {\n                    self.menus.multiplayer_open = !self.menus.multiplayer_open;\n                    if self.menus.multiplayer_open {\n                        self.menus.menu_open = false;\n                    }\n                    return;\n                }\n                KeyCode::KeyM if self.modifiers.shift_key() => {\n                    self.menus.multiplayer_open = !self.menus.multiplayer_open;\n                    if self.menus.multiplayer_open {\n                        self.menus.menu_open = false;\n                    }\n                    return;\n                }\n                KeyCode::Digit6 => {\n                    let shapes = settings::TopShape::ALL;\n                    let idx = shapes.iter().position(|&s| s == self.active.top_shape).unwrap_or(0);\n                    self.set_top_shape(shapes[(idx + 1) % shapes.len()]);\n                    return;\n                }\n                KeyCode::Digit7 => {\n                    let cooled = self.last_dual_toggle.is_none_or(|t| t.elapsed() >= Duration::from_millis(350));\n                    if cooled && self.game.is_some() {\n                        self.last_dual_toggle = Some(Instant::now());\n                        self.toggle_dual_windows();\n                    }\n                    return;\n                }\n                KeyCode::KeyD if self.modifiers.shift_key() => {\n                    let cooled = self.last_dual_toggle.is_none_or(|t| t.elapsed() >= Duration::from_millis(350));\n                    if cooled && self.game.is_some() {\n                        self.last_dual_toggle = Some(Instant::now());\n                        self.toggle_dual_windows();\n                    }\n                    return;\n                }\n                KeyCode::KeyF if self.modifiers.shift_key() => {\n                    self.toggle_fullscreen();\n                    return;\n                }\n                KeyCode::KeyP => {\n                    self.paused = !self.paused;\n                    log::info!(\"{}\", if self.paused { \"paused\" } else { \"resumed\" });\n                    return;\n                }\n                _ => {}\n            }\n        }\n        if pressed && !event.repeat {\n            match code {",
+            );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_NATIVE_NPC_V1") {
+            src = src.replace(
+                "// BLUEORB_MAC_SHORTCUTS_V1",
+                "// BLUEORB_MAC_SHORTCUTS_V1\n// BLUEORB_NATIVE_NPC_V1",
+            );
+            src = src.replace(
+                "            Action::ToggleCoopPreview => self.coop.preview_buddy = !self.coop.preview_buddy,",
+                "            Action::ToggleCoopPreview => self.coop.preview_buddy = !self.coop.preview_buddy,\n            Action::ToggleNativeNpcSync => self.coop.native_3d_npc_sync = !self.coop.native_3d_npc_sync,",
             );
             fs::write(&lib_rs, src).map_err(|e| e.to_string())?;
         }
