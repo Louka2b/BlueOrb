@@ -229,6 +229,7 @@ pub struct CoopFrame {
     pub tutorial_unlocked: bool,
     pub local_party_count: u8,
     pub in_overworld: bool,
+    pub local_in_battle: bool,
     pub local_in_cutscene: bool,
     pub warp_paused_by_cutscene: bool,
     pub waiting_for_cutscene: Vec<String>,
@@ -253,6 +254,8 @@ pub struct CoopRuntime {
     models_offset_hint: u32,
     proj_offset_hint: Option<u32>,
     last_gm_scan: Instant,
+    last_model_scan: Instant,
+    pub last_diag: String,
     last_sample: Option<SampledWorld>,
     last_presence_sent: Instant,
     last_party_sent: Instant,
@@ -291,6 +294,8 @@ impl CoopRuntime {
             models_offset_hint: 0x369C,
             proj_offset_hint: None,
             last_gm_scan: now - Duration::from_secs(5),
+            last_model_scan: now - Duration::from_secs(5),
+            last_diag: "init".to_owned(),
             last_sample: None,
             last_presence_sent: now - Duration::from_secs(1),
             last_party_sent: now - Duration::from_secs(5),
@@ -325,6 +330,7 @@ impl CoopRuntime {
         self.last_leader_zone = None;
         self.was_in_battle = false;
         self.models_offset_hint = 0x369C;
+        self.last_diag = "reset".to_owned();
         self.pending_warp = None;
         self.warp_paused_by_cutscene = false;
         self.battle_double_applied = false;
@@ -394,6 +400,8 @@ impl CoopRuntime {
             &mut self.models_offset_hint,
             &mut self.proj_offset_hint,
             &mut self.last_gm_scan,
+            &mut self.last_model_scan,
+            &mut self.last_diag,
             settings.coop_avatar_style,
         );
 
@@ -606,7 +614,7 @@ impl CoopRuntime {
             }
 
             self.was_in_battle = world.presence.in_battle;
-        } else if let Some(conn) = room {
+        } else if let (Some(conn), true) = (room, self.last_sample.is_none()) {
             if self.last_presence_sent.elapsed() >= Duration::from_millis(500) {
                 conn.send_presence(PlayerPresence {
                     zone_id: 0,
@@ -628,7 +636,9 @@ impl CoopRuntime {
             }
         }
 
-        self.last_sample = sampled;
+        if sampled.is_some() {
+            self.last_sample = sampled;
+        }
     }
 
     /// Advances smooth peer interpolation and UDP LAN discovery/beacon traffic.
@@ -832,6 +842,11 @@ impl CoopRuntime {
             None => (false, None, Vec::new()),
         };
 
+        let local_in_battle = self
+            .last_sample
+            .as_ref()
+            .is_some_and(|s| s.presence.in_battle);
+
         CoopFrame {
             local_zone,
             local_pos,
@@ -842,6 +857,7 @@ impl CoopRuntime {
             tutorial_unlocked: self.tutorial_unlocked(settings),
             local_party_count: self.local_party_count,
             in_overworld,
+            local_in_battle,
             local_in_cutscene,
             warp_paused_by_cutscene: self.warp_paused_by_cutscene,
             waiting_for_cutscene,
@@ -1047,6 +1063,42 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
         }
     }
 
+    // Overlay fallback: when the 3D overworld camera or zone cannot be resolved yet,
+    // keep both the Sapphire Bot and same-zone/syncing teammates visible on the top screen.
+    if frame.camera.is_none() || frame.local_zone.is_none() || frame.local_zone == Some(0) {
+        let c = top_rect.center();
+        let h_px = (top_rect.height() * 0.2).clamp(24.0, 60.0);
+        let non_bots: Vec<&RenderPeer> = frame
+            .peers
+            .iter()
+            .filter(|p| {
+                p.mac[..5] != [0x02, 0x42, 0x4C, 0x55, 0x45]
+                    && (frame.local_zone.is_none()
+                        || frame.local_zone == Some(0)
+                        || p.zone_id == 0
+                        || Some(p.zone_id) == frame.local_zone)
+            })
+            .collect();
+        let total = non_bots.len();
+        for (idx, peer) in non_bots.into_iter().enumerate() {
+            let spread = (idx as f32 - (total.saturating_sub(1) as f32) * 0.5) * 56.0;
+            let offset_x = if total == 1 { 48.0 } else { spread };
+            let feet = Pos2::new(
+                (c.x + offset_x).clamp(top_rect.left() + 24.0, top_rect.right() - 24.0),
+                c.y + top_rect.height() * 0.16,
+            );
+            paint_world_avatar(&clipped, feet, h_px, peer, 0.0, time_s, settings.coop_show_names);
+        }
+        for peer in frame.peers.iter().filter(|p| p.mac[..5] == [0x02, 0x42, 0x4C, 0x55, 0x45]) {
+            let ang = time_s * 1.15;
+            let feet = Pos2::new(
+                c.x + ang.cos() * top_rect.width() * 0.22,
+                c.y + top_rect.height() * 0.18 + ang.sin() * top_rect.height() * 0.06,
+            );
+            paint_world_avatar(&clipped, feet, h_px, peer, 0.0, time_s, settings.coop_show_names);
+        }
+    }
+
     // Cutscene wait card when local player finished first and partners are still in a cutscene
     if !frame.local_in_cutscene && !frame.waiting_for_cutscene.is_empty() {
         let names = frame.waiting_for_cutscene.join(", ");
@@ -1166,7 +1218,7 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
                                 },
                             );
                             let total_count = frame.room_members.len().max(frame.peers.len() + usize::from(frame.room_connected));
-                            let title = if !frame.in_overworld {
+                            let title = if frame.local_in_battle {
                                 "Co-op Battle".to_owned()
                             } else if !has_teammate {
                                 "Room Open (1/1 — Waiting)".to_owned()
@@ -1194,9 +1246,13 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
                         }
                         if !has_teammate {
                             ui.label(
-                                RichText::new("Press F4 to share IP or join mate")
-                                    .size(10.0)
-                                    .color(Color32::from_rgb(196, 208, 228)),
+                                RichText::new(if cfg!(target_os = "macos") {
+                                    "Press ⌘4 to share IP or join mate"
+                                } else {
+                                    "Press F4 to share IP or join mate"
+                                })
+                                .size(10.0)
+                                .color(Color32::from_rgb(196, 208, 228)),
                             );
                         }
                         if !frame.tutorial_unlocked {
@@ -1267,7 +1323,7 @@ pub fn render_overworld_coop(ctx: &egui::Context, top_rect: Rect, frame: &CoopFr
                                 });
                             }
                         }
-                        if !frame.in_overworld && (!frame.local_party.is_empty() || !frame.partner_parties.is_empty()) {
+                        if frame.local_in_battle && (!frame.local_party.is_empty() || !frame.partner_parties.is_empty()) {
                             ui.separator();
                             if !frame.local_party.is_empty() {
                                 let alive = frame.local_party.iter().filter(|m| m.hp > 0).count();
@@ -1581,6 +1637,12 @@ pub fn draw_multiplayer_window(
                         None => "Telemetry: Waiting for ORAS world state…".to_owned(),
                     };
                     ui.label(RichText::new(telem).size(10.5).monospace().color(Color32::from_rgb(154, 206, 255)));
+                    ui.label(
+                        RichText::new(format!("Diag: {}", coop.last_diag))
+                            .size(9.5)
+                            .monospace()
+                            .color(Color32::from_rgb(142, 162, 192)),
+                    );
                 });
             ui.add_space(8.0);
 
@@ -1986,7 +2048,7 @@ fn try_models_offset(mem: &mut Memory, model_mgr: u32, off: u32) -> Option<u32> 
     // Check pointer table layout (`*(models_base + i * 4)`)
     for i in 0..32u32 {
         let Some(ptr) = read_u32(mem, models_base.wrapping_add(i * 4)).filter(|&p| is_heap_ptr(p)) else {
-            break;
+            continue;
         };
         if let Some(found) = check_candidate_player_model(mem, ptr) {
             return Some(found);
@@ -1995,7 +2057,12 @@ fn try_models_offset(mem: &mut Memory, model_mgr: u32, off: u32) -> Option<u32> 
     None
 }
 
-fn find_player_model(mem: &mut Memory, model_mgr: u32, offset_hint: &mut u32) -> Option<u32> {
+fn find_player_model(
+    mem: &mut Memory,
+    model_mgr: u32,
+    offset_hint: &mut u32,
+    last_model_scan: &mut Instant,
+) -> Option<u32> {
     if let Some(m) = try_models_offset(mem, model_mgr, *offset_hint) {
         return Some(m);
     }
@@ -2003,6 +2070,15 @@ fn find_player_model(mem: &mut Memory, model_mgr: u32, offset_hint: &mut u32) ->
         if let Some(m) = try_models_offset(mem, model_mgr, off) {
             *offset_hint = off;
             return Some(m);
+        }
+    }
+    if last_model_scan.elapsed() >= Duration::from_secs(1) {
+        *last_model_scan = Instant::now();
+        for off in (0x0000u32..=0x4000).step_by(4) {
+            if let Some(m) = try_models_offset(mem, model_mgr, off) {
+                *offset_hint = off;
+                return Some(m);
+            }
         }
     }
     None
@@ -2330,6 +2406,10 @@ fn project_point(
 }
 
 fn validate_gm_slot(mem: &mut Memory, slot_addr: u32) -> Option<(u32, u32, u32, u16)> {
+    validate_gm_slot_mode(mem, slot_addr, true)
+}
+
+fn validate_gm_slot_mode(mem: &mut Memory, slot_addr: u32, strict: bool) -> Option<(u32, u32, u32, u16)> {
     let gm = read_u32(mem, slot_addr)?;
     if !is_heap_ptr(gm) {
         return None;
@@ -2341,8 +2421,19 @@ fn validate_gm_slot(mem: &mut Memory, slot_addr: u32) -> Option<(u32, u32, u32, 
     }
     let zone_a = read_u16(mem, data_mgr.wrapping_add(0x124))?;
     let zone_b = read_u32(mem, map_mgr.wrapping_add(0xF0))? as u16;
-    if zone_a >= 2048 || zone_a != zone_b {
+    if zone_a >= 2048 {
         return None;
+    }
+    if zone_a != zone_b {
+        if strict {
+            return None;
+        }
+        if zone_a == 0 {
+            if (1..2048).contains(&zone_b) {
+                return Some((gm, data_mgr, map_mgr, zone_b));
+            }
+            return None;
+        }
     }
     Some((gm, data_mgr, map_mgr, zone_a))
 }
@@ -2353,24 +2444,36 @@ fn sample_oras_world(
     models_offset_hint: &mut u32,
     proj_offset_hint: &mut Option<u32>,
     last_gm_scan: &mut Instant,
+    last_model_scan: &mut Instant,
+    diag: &mut String,
     avatar_style: u8,
 ) -> Option<SampledWorld> {
-    let (gm, data_mgr, map_mgr, zone_id) = match validate_gm_slot(mem, *gm_slot_hint) {
+    let (gm, data_mgr, map_mgr, zone_id) = match validate_gm_slot_mode(mem, *gm_slot_hint, false) {
         Some(v) => v,
         None => {
             if last_gm_scan.elapsed() < Duration::from_secs(1) {
+                *diag = "GM:none".to_owned();
                 return None;
             }
             *last_gm_scan = Instant::now();
             let mut found = None;
-            for addr in (0x0058_0000..=0x0078_0000).step_by(4) {
-                if let Some(v) = validate_gm_slot(mem, addr) {
-                    *gm_slot_hint = addr;
-                    found = Some(v);
+            for strict in [true, false] {
+                for addr in (0x0058_0000..=0x0078_0000).step_by(4) {
+                    if let Some(v) = validate_gm_slot_mode(mem, addr, strict) {
+                        *gm_slot_hint = addr;
+                        found = Some(v);
+                        break;
+                    }
+                }
+                if found.is_some() {
                     break;
                 }
             }
-            found?
+            let Some(v) = found else {
+                *diag = "GM:none".to_owned();
+                return None;
+            };
+            v
         }
     };
 
@@ -2378,10 +2481,14 @@ fn sample_oras_world(
     let (team_ptr, party_count, party_mons) = read_party_summary(mem, data_mgr);
 
     let model_mgr = read_u32(mem, data_mgr.wrapping_add(0x20)).filter(|&p| is_heap_ptr(p));
-    let player_slot = model_mgr.and_then(|mm| find_player_model(mem, mm, models_offset_hint));
+    let player_slot = model_mgr.and_then(|mm| find_player_model(mem, mm, models_offset_hint, last_model_scan));
 
     let Some(player_base) = player_slot else {
         let in_battle = is_battle_active(mem, team_ptr);
+        *diag = format!(
+            "GM:ok Z:{zone_id} MM:{} P:none Cam:none",
+            if model_mgr.is_some() { "yes" } else { "no" },
+        );
         return Some(SampledWorld {
             presence: PlayerPresence {
                 zone_id,
@@ -2466,6 +2573,10 @@ fn sample_oras_world(
         .or_else(|| Some(fallback_overworld_camera([px, py, pz])));
 
     let in_battle = is_battle_active(mem, team_ptr);
+    *diag = format!(
+        "GM:ok Z:{zone_id} MM:yes P:ok Cam:{}",
+        if camera.is_some() { "ok" } else { "none" },
+    );
     Some(SampledWorld {
         presence: PlayerPresence {
             zone_id,
@@ -2589,5 +2700,16 @@ mod tests {
         assert!(((p_uw.x - 400.0) / (p_std.x - 400.0) - 0.75).abs() < 1e-3);
 
         assert!(project_point(&cam, [0.0, 0.0, 150.0], top, 1.0).is_none());
+    }
+
+    #[test]
+    fn build_frame_preview_buddy_and_not_in_battle() {
+        let mut coop = CoopRuntime::new();
+        coop.preview_buddy = true;
+        let settings = Settings::default();
+        let frame = coop.build_frame(&settings, None);
+        assert!(!frame.local_in_battle);
+        assert_eq!(frame.peers.len(), 1);
+        assert_eq!(frame.peers[0].nickname, "Sapphire Bot");
     }
 }

@@ -1199,6 +1199,25 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
                 "                    if console_secondary_button(ui, half, 32.0, \"Multiplayer & Co-op (F4)\", true) {\n                        self.multiplayer_open = true;\n                    }",
                 "                    if console_secondary_button(ui, half, 32.0, \"Multiplayer & Co-op (F4)\", true) {\n                        self.multiplayer_open = true;\n                        self.menu_open = false;\n                    }",
             );
+            fs::write(&menus_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_MAC_HINTS_V1") {
+            src = src.replace(
+                "// BLUEORB_MULTI_NO_PAUSE_V1",
+                "// BLUEORB_MULTI_NO_PAUSE_V1\n    // BLUEORB_MAC_HINTS_V1",
+            );
+            src = src.replace(
+                "                        launcher_key_hint(ui, \"F4\", \"Multiplayer\");\n                        launcher_key_hint(ui, \"F6\", \"Ultrawide\");\n                        launcher_key_hint(ui, \"F7\", \"Dual Screen\");\n                        launcher_key_hint(ui, \"F11\", \"Fullscreen\");",
+                "                        launcher_key_hint(ui, if cfg!(target_os = \"macos\") { \"⌘4\" } else { \"F4\" }, \"Multiplayer\");\n                        launcher_key_hint(ui, if cfg!(target_os = \"macos\") { \"⌘6\" } else { \"F6\" }, \"Ultrawide\");\n                        launcher_key_hint(ui, if cfg!(target_os = \"macos\") { \"⌘7\" } else { \"F7\" }, \"Dual Screen\");\n                        launcher_key_hint(ui, if cfg!(target_os = \"macos\") { \"⌘⇧F\" } else { \"F11\" }, \"Fullscreen\");",
+            );
+            src = src.replace(
+                "(Screens::SeparateWindows, \"Dual Window (F7)\", \"Detach touch screen into its own window\", 3),",
+                "(Screens::SeparateWindows, if cfg!(target_os = \"macos\") { \"Dual Window (⌘7)\" } else { \"Dual Window (F7)\" }, \"Detach touch screen into its own window\", 3),",
+            );
+            src = src.replace(
+                "console_secondary_button(ui, half, 32.0, \"Multiplayer & Co-op (F4)\", true)",
+                "console_secondary_button(ui, half, 32.0, if cfg!(target_os = \"macos\") { \"Multiplayer & Co-op (⌘4)\" } else { \"Multiplayer & Co-op (F4)\" }, true)",
+            );
             fs::write(&menus_rs, src).map_err(|e| e.to_string())?;
         }
     }
@@ -2486,7 +2505,7 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());",
-                "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());\n        let rpc_frame = self.coop.build_frame(&self.settings, self.room.as_ref());\n        self.discord.update(\n            self.settings.discord_rpc,\n            &self.settings.discord_client_id,\n            discord::RpcSnapshot {\n                in_game: self.game.is_some(),\n                zone_id: rpc_frame.local_zone,\n                in_battle: !rpc_frame.in_overworld,\n                in_cutscene: rpc_frame.local_in_cutscene,\n                party_count: rpc_frame.local_party_count,\n                coop_members: self.room.as_ref().map_or(0, |r| r.members().len()),\n                is_leader: rpc_frame.local_is_leader,\n            },\n        );\n        self.menus.discord_state = self.discord.state();",
+                "        self.coop.tick(self.room.as_ref(), hosting_info, self.menus.multiplayer_open && self.room.is_none());\n        let rpc_frame = self.coop.build_frame(&self.settings, self.room.as_ref());\n        self.discord.update(\n            self.settings.discord_rpc,\n            &self.settings.discord_client_id,\n            discord::RpcSnapshot {\n                in_game: self.game.is_some(),\n                zone_id: rpc_frame.local_zone,\n                in_battle: rpc_frame.local_in_battle,\n                in_cutscene: rpc_frame.local_in_cutscene,\n                party_count: rpc_frame.local_party_count,\n                coop_members: self.room.as_ref().map_or(0, |r| r.members().len()),\n                is_leader: rpc_frame.local_is_leader,\n            },\n        );\n        self.menus.discord_state = self.discord.state();",
             );
             fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
         }
@@ -2513,11 +2532,61 @@ fn patch_zakuro_frontend_onboarding_console_ui_and_dual_window(zakuro_repo: &Pat
             );
             src = src.replace(
                 "                    if !menus.menu_open && settings.coop_enabled {\n                        if let Some(top_rect) = coop::top_screen_rect_points(window, settings, active_layout, active_top_shape) {\n                            coop::render_overworld_coop(ui.ctx(), top_rect, &coop_frame, settings);\n                        }\n                    }",
-                "                    if settings.coop_enabled && (!menus.menu_open || coop_frame.room_connected) {\n                        if let Some(top_rect) = coop::top_screen_rect_points(window, settings, active_layout, active_top_shape) {\n                            coop::render_overworld_coop(ui.ctx(), top_rect, &coop_frame, settings);\n                        }\n                    }",
+                "                    if settings.coop_enabled && (!menus.menu_open || coop_frame.room_connected || !coop_frame.peers.is_empty()) {\n                        if let Some(top_rect) = coop::top_screen_rect_points(window, settings, active_layout, active_top_shape) {\n                            coop::render_overworld_coop(ui.ctx(), top_rect, &coop_frame, settings);\n                        }\n                    }",
             );
             src = src.replace(
                 "        match zakuro_core::room::Connection::join(address.trim(), &self.nickname(), &password) {\n            Ok(room) => {\n                self.room = Some(room);\n                self.link_room();\n            }\n            Err(error) => self.menus.message = Some(format!(\"Could not join the room, {error}.\")),\n        }",
                 "        let addr = address.trim();\n        let base_nick = self.nickname();\n        let mut joined: Option<(zakuro_core::room::Connection, String)> = None;\n        let mut last_err = String::new();\n        for attempt in 0..8u32 {\n            let nick = if attempt == 0 {\n                base_nick.clone()\n            } else {\n                let max_prefix = base_nick.chars().take(8).collect::<String>();\n                format!(\"{max_prefix}{}\", attempt + 1)\n            };\n            match zakuro_core::room::Connection::join(addr, &nick, &password) {\n                Ok(room) => {\n                    joined = Some((room, nick));\n                    break;\n                }\n                Err(error) => {\n                    let dup = error.contains(\"has that nickname\");\n                    last_err = error;\n                    if !dup {\n                        break;\n                    }\n                }\n            }\n        }\n        match joined {\n            Some((room, used_nick)) => {\n                let room_title = room.room().to_owned();\n                let count = room.members().len().max(1);\n                self.room = Some(room);\n                self.link_room();\n                self.menus.toast = Some((\n                    format!(\"Connected to '{room_title}' as {used_nick} ({count} online)\"),\n                    Instant::now(),\n                ));\n            }\n            None => {\n                self.menus.message = Some(format!(\"Could not join the room, {last_err}.\"));\n            }\n        }",
+            );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_COOP_MOD_V4") {
+            src = src.replace(
+                "// BLUEORB_COOP_MOD_V3",
+                "// BLUEORB_COOP_MOD_V3\n// BLUEORB_COOP_MOD_V4",
+            );
+            src = src.replace(
+                "in_battle: !rpc_frame.in_overworld,",
+                "in_battle: rpc_frame.local_in_battle,",
+            );
+            src = src.replace(
+                "if settings.coop_enabled && (!menus.menu_open || coop_frame.room_connected)",
+                "if settings.coop_enabled && (!menus.menu_open || coop_frame.room_connected || !coop_frame.peers.is_empty())",
+            );
+            fs::write(&lib_rs, src.clone()).map_err(|e| e.to_string())?;
+        }
+        if !src.contains("BLUEORB_MAC_SHORTCUTS_V1") {
+            src = src.replace(
+                "// BLUEORB_COOP_MOD_V4",
+                "// BLUEORB_COOP_MOD_V4\n// BLUEORB_MAC_SHORTCUTS_V1",
+            );
+            src = src.replace(
+                "    discord: discord::DiscordRpcRuntime,",
+                "    discord: discord::DiscordRpcRuntime,\n    modifiers: winit::keyboard::ModifiersState,",
+            );
+            src = src.replace(
+                "        discord: discord::DiscordRpcRuntime::new(),",
+                "        discord: discord::DiscordRpcRuntime::new(),\n        modifiers: winit::keyboard::ModifiersState::empty(),",
+            );
+            src = src.replace(
+                "                WindowEvent::Focused(false) => {\n                    self.bottom_mouse_down = false;\n                    self.fast_forward_key = false;\n                    self.keyboard.release();\n                }",
+                "                WindowEvent::Focused(false) => {\n                    self.bottom_mouse_down = false;\n                    self.fast_forward_key = false;\n                    self.modifiers = winit::keyboard::ModifiersState::empty();\n                    self.keyboard.release();\n                }",
+            );
+            src = src.replace(
+                "                WindowEvent::KeyboardInput { event, .. } => self.key(event, false),",
+                "                WindowEvent::ModifiersChanged(mods) => self.modifiers = mods.state(),\n                WindowEvent::KeyboardInput { event, .. } => self.key(event, false),",
+            );
+            src = src.replace(
+                "            WindowEvent::Focused(false) => {\n                self.fast_forward_key = false;\n                self.blow(false);\n                self.keyboard.release();\n            }",
+                "            WindowEvent::Focused(false) => {\n                self.fast_forward_key = false;\n                self.modifiers = winit::keyboard::ModifiersState::empty();\n                self.blow(false);\n                self.keyboard.release();\n            }",
+            );
+            src = src.replace(
+                "            WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),",
+                "            WindowEvent::ModifiersChanged(mods) => self.modifiers = mods.state(),\n            WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),",
+            );
+            src = src.replace(
+                "        if pressed && !event.repeat {\n            match code {",
+                "        if pressed && !event.repeat && (self.modifiers.super_key() || self.modifiers.control_key()) {\n            match code {\n                KeyCode::Digit4 => {\n                    self.menus.multiplayer_open = !self.menus.multiplayer_open;\n                    if self.menus.multiplayer_open {\n                        self.menus.menu_open = false;\n                    }\n                    return;\n                }\n                KeyCode::KeyM if self.modifiers.shift_key() => {\n                    self.menus.multiplayer_open = !self.menus.multiplayer_open;\n                    if self.menus.multiplayer_open {\n                        self.menus.menu_open = false;\n                    }\n                    return;\n                }\n                KeyCode::Digit6 => {\n                    let shapes = settings::TopShape::ALL;\n                    let idx = shapes.iter().position(|&s| s == self.active.top_shape).unwrap_or(0);\n                    self.set_top_shape(shapes[(idx + 1) % shapes.len()]);\n                    return;\n                }\n                KeyCode::Digit7 => {\n                    let cooled = self.last_dual_toggle.is_none_or(|t| t.elapsed() >= Duration::from_millis(350));\n                    if cooled && self.game.is_some() {\n                        self.last_dual_toggle = Some(Instant::now());\n                        self.toggle_dual_windows();\n                    }\n                    return;\n                }\n                KeyCode::KeyD if self.modifiers.shift_key() => {\n                    let cooled = self.last_dual_toggle.is_none_or(|t| t.elapsed() >= Duration::from_millis(350));\n                    if cooled && self.game.is_some() {\n                        self.last_dual_toggle = Some(Instant::now());\n                        self.toggle_dual_windows();\n                    }\n                    return;\n                }\n                KeyCode::KeyF if self.modifiers.shift_key() => {\n                    self.toggle_fullscreen();\n                    return;\n                }\n                KeyCode::KeyP => {\n                    self.paused = !self.paused;\n                    log::info!(\"{}\", if self.paused { \"paused\" } else { \"resumed\" });\n                    return;\n                }\n                _ => {}\n            }\n        }\n        if pressed && !event.repeat {\n            match code {",
             );
             fs::write(&lib_rs, src).map_err(|e| e.to_string())?;
         }
