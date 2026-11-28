@@ -193,6 +193,17 @@ struct PendingWarp {
     issued_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct HijackedNpc {
+    addr: u32,
+    obj_code: u16,
+    orig_move_code: u16,
+    orig_prev: [f32; 3],
+    orig_next: [f32; 3],
+    orig_now: [f32; 3],
+    orig_draw: [f32; 3],
+}
+
 #[derive(Debug, Clone)]
 struct SmoothedRemote {
     nickname: String,
@@ -263,7 +274,7 @@ pub struct CoopRuntime {
     last_model_scan: Instant,
     last_vtable_scan: Instant,
     last_known_zone: Option<u16>,
-    hijacked_npc: Option<(u32, [f32; 3], [f32; 3])>,
+    hijacked_npc: Option<HijackedNpc>,
     native_npc_peer: Option<Mac>,
     pub last_diag: String,
     last_sample: Option<SampledWorld>,
@@ -662,22 +673,35 @@ impl CoopRuntime {
             if let Some((peer_mac, pos, yaw)) = synced_peer {
                 let target_npc = self
                     .hijacked_npc
-                    .map(|(addr, _, _)| addr)
+                    .map(|h| h.addr)
                     .filter(|addr| world.active_npcs.contains(addr))
                     .or_else(|| world.active_npcs.first().copied());
                 if let Some(npc_addr) = target_npc {
-                    if self.hijacked_npc.is_some_and(|(old, _, _)| old != npc_addr) {
+                    if self.hijacked_npc.is_some_and(|h| h.addr != npc_addr) {
                         restore_hijacked_npc(memory, &mut self.hijacked_npc);
                     }
                     if self.hijacked_npc.is_none() {
-                        if let (Some(wpos), Some(dpos)) = (
+                        if let (Some(obj_code), Some(orig_move_code), Some(orig_prev), Some(orig_next), Some(orig_now), Some(orig_draw)) = (
+                            read_u16(memory, npc_addr.wrapping_add(0x0E)),
+                            read_u16(memory, npc_addr.wrapping_add(0x10)),
+                            read_vec3(memory, npc_addr.wrapping_add(0x94)),
+                            read_vec3(memory, npc_addr.wrapping_add(0xC0)),
                             read_vec3(memory, npc_addr.wrapping_add(0xEC)),
                             read_vec3(memory, npc_addr.wrapping_add(0x114)),
                         ) {
-                            self.hijacked_npc = Some((npc_addr, wpos, dpos));
+                            self.hijacked_npc = Some(HijackedNpc {
+                                addr: npc_addr,
+                                obj_code,
+                                orig_move_code,
+                                orig_prev,
+                                orig_next,
+                                orig_now,
+                                orig_draw,
+                            });
                         }
                     }
-                    teleport_player_coords(memory, npc_addr, pos);
+                    write_u16_if_writable(memory, npc_addr.wrapping_add(0x10), 0);
+                    set_model_all_positions(memory, npc_addr, pos);
                     write_model_facing(memory, npc_addr, yaw);
                     self.native_npc_peer = Some(peer_mac);
                 } else {
@@ -2220,7 +2244,7 @@ fn find_models_base_by_vtable(
 
 fn scan_models_array(mem: &mut Memory, models_base: u32) -> (Option<u32>, Vec<u32>) {
     let mut player = None;
-    let mut npcs = Vec::new();
+    let mut npcs: Vec<(bool, u32)> = Vec::new();
     for i in 0..32u32 {
         let m = models_base.wrapping_add(i * ORAS_MOVEMODEL_STRIDE);
         if !mem.is_readable(m, 0x120) {
@@ -2236,10 +2260,16 @@ fn scan_models_array(mem: &mut Memory, models_base: u32) -> (Option<u32>, Vec<u3
                 player = Some(m);
             }
         } else if read_u32(mem, m) == Some(ORAS_MOVEMODEL_VTABLE) {
-            npcs.push(m);
+            let obj_code = read_u16(mem, m.wrapping_add(0x0E)).unwrap_or(0);
+            let move_code = read_u16(mem, m.wrapping_add(0x10)).unwrap_or(0);
+            if (1..=260).contains(&obj_code) {
+                npcs.push((move_code != 0, m));
+            }
         }
     }
-    (player, npcs)
+    // Prioritize living NPCs with active movement AI over static objects
+    npcs.sort_by_key(|&(has_ai, _)| !has_ai);
+    (player, npcs.into_iter().map(|(_, m)| m).collect())
 }
 
 fn fallback_overworld_camera(player: [f32; 3]) -> WorldCamera {
@@ -2374,27 +2404,48 @@ fn write_model_facing(mem: &mut Memory, model_addr: u32, yaw: f32) {
     mem.write_bytes(facing_addr, &raw);
 }
 
-fn restore_hijacked_npc(mem: &mut Memory, hijacked: &mut Option<(u32, [f32; 3], [f32; 3])>) {
-    let Some((addr, wpos, dpos)) = hijacked.take() else {
+fn write_vec3_if_writable(mem: &mut Memory, addr: u32, pos: [f32; 3]) -> bool {
+    if !pos.iter().all(|v| v.is_finite() && v.abs() < 100_000.0) {
+        return false;
+    }
+    if !mem.is_writable(addr, 12) {
+        return false;
+    }
+    let mut raw = [0u8; 12];
+    raw[0..4].copy_from_slice(&pos[0].to_le_bytes());
+    raw[4..8].copy_from_slice(&pos[1].to_le_bytes());
+    raw[8..12].copy_from_slice(&pos[2].to_le_bytes());
+    mem.write_bytes(addr, &raw);
+    true
+}
+
+fn write_u16_if_writable(mem: &mut Memory, addr: u32, val: u16) {
+    if mem.is_writable(addr, 2) {
+        mem.write_bytes(addr, &val.to_le_bytes());
+    }
+}
+
+fn set_model_all_positions(mem: &mut Memory, addr: u32, pos: [f32; 3]) {
+    for off in [0x94u32, 0xC0, 0xEC, 0x114] {
+        write_vec3_if_writable(mem, addr.wrapping_add(off), pos);
+    }
+}
+
+fn restore_hijacked_npc(mem: &mut Memory, hijacked: &mut Option<HijackedNpc>) {
+    let Some(saved) = hijacked.take() else {
         return;
     };
-    if !is_heap_ptr(addr) {
+    if !is_heap_ptr(saved.addr) {
         return;
     }
-    let mut wraw = [0u8; 12];
-    let mut draw = [0u8; 12];
-    for i in 0..3 {
-        wraw[i * 4..(i + 1) * 4].copy_from_slice(&wpos[i].to_le_bytes());
-        draw[i * 4..(i + 1) * 4].copy_from_slice(&dpos[i].to_le_bytes());
+    if read_u16(mem, saved.addr.wrapping_add(0x0E)) != Some(saved.obj_code) {
+        return;
     }
-    let wa = addr.wrapping_add(0xEC);
-    let da = addr.wrapping_add(0x114);
-    if mem.is_writable(wa, 12) {
-        mem.write_bytes(wa, &wraw);
-    }
-    if mem.is_writable(da, 12) {
-        mem.write_bytes(da, &draw);
-    }
+    write_u16_if_writable(mem, saved.addr.wrapping_add(0x10), saved.orig_move_code);
+    write_vec3_if_writable(mem, saved.addr.wrapping_add(0x94), saved.orig_prev);
+    write_vec3_if_writable(mem, saved.addr.wrapping_add(0xC0), saved.orig_next);
+    write_vec3_if_writable(mem, saved.addr.wrapping_add(0xEC), saved.orig_now);
+    write_vec3_if_writable(mem, saved.addr.wrapping_add(0x114), saved.orig_draw);
 }
 
 /// Safely upgrades eligible standard battles (`Format::kSingle`) to `Format::kDouble` (2v2)
